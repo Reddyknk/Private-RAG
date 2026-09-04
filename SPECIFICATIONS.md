@@ -6,3 +6,9 @@
 4. All of the backend code should be written in python, including AnythingLLM or local ollama, the web app should be built using flask.
 5. All calls to external resources like Google AI Studio or any external API should be done from the backend python code, not from the frontend.
 6. All the calls to the container and external resources should be logged in database/logs.json. The log should include the time of the call, the type of the call, the arguments passed to the call, and the response from the call. Exclude the vector or non-text content in the call.
+7. Create a README.md with a brief description about:
+ - what this system does
+ - how to install the components needed
+ - how to start all the services
+ - how to shutdown all the services
+ - user guide with information on how to use the system
