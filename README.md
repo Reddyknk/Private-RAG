@@ -90,6 +90,10 @@ Ollama runs locally as a daemon/service to compute vector embeddings without dat
 # Download and install Ollama binary
 curl -fsSL https://ollama.com/install.sh | sh
 ```
+Prevent Ollama from starting on boot
+```bash
+sudo systemctl disable ollama
+```
 
 ### Step 4: Configure Environment Variables
 Create or edit `.env` in the root of the project directory:
@@ -113,7 +117,7 @@ In your terminal, start the Ollama server and download the embedding model:
 
 ```bash
 # 1. Start the Ollama background daemon
-OLLAMA_HOST=127.0.0.1:11434 ollama serve &
+OLLAMA_HOST=127.0.0.1:11434 ollama serve > /dev/null 2>&1 &
 
 # 2. Verify Ollama is responding
 curl -s http://127.0.0.1:11434/api/version
