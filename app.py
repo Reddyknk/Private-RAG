@@ -1,12 +1,141 @@
 import os
+import shutil
+import subprocess
+import time
+import uuid
+import requests
 from flask import Flask, render_template, request, jsonify
 
 import config
-from services.logger_service import get_logs, clear_logs
-from services.ollama_embedder import check_ollama_health
+from services.logger_service import (
+    get_logs,
+    clear_logs,
+    log_call,
+    log_event,
+    log_conversation,
+    get_conversations,
+    get_conversation_events
+)
+from services.ollama_embedder import check_ollama_health, OllamaEmbeddingFunction
 from services.document_loader import load_from_url, load_from_directory
 from services.vector_store import vector_store
 from services.gemma_service import gemma_service
+from services.embedder_manager import (
+    get_embedder_catalog,
+    get_current_embedder_model,
+    init_embedder_config
+)
+from services.skill_runner import (
+    auto_index_skills_into_db,
+    get_available_skills,
+    execute_skill_tools_if_relevant
+)
+
+# Ensure embedder configuration exists in services/
+init_embedder_config()
+
+
+
+import atexit
+import signal
+import sys
+
+_ollama_process = None
+_ollama_started_by_app = False
+
+
+def shutdown_ollama_if_started_by_app():
+    """Shutdown Ollama service only if it was started by this application instance."""
+    global _ollama_started_by_app, _ollama_process
+    if not _ollama_started_by_app:
+        return
+    print("\n[Ollama] Application is terminating. Shutting down Ollama daemon started by app...")
+    try:
+        if _ollama_process and _ollama_process.poll() is None:
+            _ollama_process.terminate()
+            try:
+                _ollama_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                _ollama_process.kill()
+            print("[Ollama] Ollama daemon terminated cleanly.")
+    except Exception as e:
+        print(f"[Ollama] Error during daemon termination: {e}")
+    _ollama_started_by_app = False
+
+
+atexit.register(shutdown_ollama_if_started_by_app)
+
+
+def _handle_exit_signal(sig, frame):
+    shutdown_ollama_if_started_by_app()
+    sys.exit(0)
+
+
+try:
+    signal.signal(signal.SIGINT, _handle_exit_signal)
+    signal.signal(signal.SIGTERM, _handle_exit_signal)
+except Exception:
+    pass
+
+
+def ensure_ollama_running(base_url: str = config.OLLAMA_BASE_URL, timeout: int = 8) -> bool:
+    """Check if Ollama is running. If not, launch 'ollama serve' as a background daemon."""
+    global _ollama_started_by_app, _ollama_process
+    try:
+        resp = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=1.5)
+        if resp.status_code == 200:
+            print(f"[Ollama] Service is already active and responsive at {base_url}.")
+            _ollama_started_by_app = False
+            return True
+    except Exception:
+        pass
+
+    ollama_bin = shutil.which("ollama")
+    if not ollama_bin:
+        print("[Ollama] Warning: 'ollama' executable not found in system PATH.")
+        return False
+
+    print(f"[Ollama] Daemon not detected at {base_url}. Auto-starting '{ollama_bin} serve'...")
+    try:
+        env = os.environ.copy()
+        if "127.0.0.1" in base_url or "localhost" in base_url:
+            env["OLLAMA_HOST"] = "127.0.0.1:11434"
+        _ollama_process = subprocess.Popen(
+            [ollama_bin, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True
+        )
+        _ollama_started_by_app = True
+    except Exception as e:
+        print(f"[Ollama] Failed to launch daemon: {e}")
+        return False
+
+    # Poll until responsive
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        time.sleep(0.5)
+        try:
+            resp = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=1.5)
+            if resp.status_code == 200:
+                print(f"[Ollama] Daemon started successfully and is ready at {base_url}!")
+                return True
+        except Exception:
+            pass
+
+    print(f"[Ollama] Warning: Daemon launched, but was not responsive within {timeout}s.")
+    return False
+
+
+# Auto-check and start Ollama on application boot
+ensure_ollama_running()
+
+# Auto-discover and embed skills into vector DB per SKILL_SPEC.md
+try:
+    auto_index_skills_into_db()
+except Exception as e:
+    print(f"[Skills] Notice: Skill discovery deferral ({e})")
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.urandom(24)
@@ -32,6 +161,18 @@ def health():
             "primary_model": config.GEMMA_PRIMARY_MODEL
         },
         "database_dir": str(config.DATABASE_DIR)
+    })
+
+
+@app.route("/api/models", methods=["GET"])
+def get_chat_models():
+    """Return list of text output models available in Google AI Studio."""
+    models = gemma_service.get_available_text_models()
+    default_model = next((m["id"] for m in models if m.get("is_default")), config.GEMMA_PRIMARY_MODEL)
+    return jsonify({
+        "status": "success",
+        "default_model": default_model,
+        "models": models
     })
 
 
@@ -86,53 +227,331 @@ def ingest_documents():
 @app.route("/api/query", methods=["POST"])
 def query_rag():
     """
-    Page 2 backend: Takes user question, searches private vector database,
-    and generates grounded answer using Gemma on Google AI Studio.
+    Page 1 backend: Takes user question, searches private vector database,
+    invokes skills/tools if applicable, generates grounded answer via Google AI Studio,
+    and logs all Agent, LLM, and Tool invocations asynchronously into database/.
     """
     data = request.get_json(force=True, silent=True) or {}
     question = data.get("question", "").strip()
     top_k = int(data.get("top_k", 4))
+    selected_model = data.get("model", "").strip() or None
+    conversation_id = data.get("conversation_id", "").strip() or f"conv-{uuid.uuid4().hex[:12]}"
 
     if not question:
         return jsonify({"error": "Field 'question' is required."}), 400
 
+    query_start_time = time.time()
+
     try:
-        # 1. Semantic search in private vector DB
+        # 1. Agent Component: Log Agent Query (User -> Agent)
+        agent_req_payload = {
+            "question": question,
+            "top_k": top_k,
+            "model": selected_model,
+            "conversation_id": conversation_id,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        }
+        log_event(
+            event_type="Agent Query",
+            invoker="User",
+            target="Agent",
+            short_description=f"User query: \"{question[:70]}{'...' if len(question) > 70 else ''}\"",
+            payload={
+                "request": agent_req_payload,
+                "response": {"status": "processing"}
+            },
+            conversation_id=conversation_id,
+            status="success"
+        )
+
+        # 2. Embedder Component: Local Ollama Embedding
+        current_embed_model = get_current_embedder_model()
+        emb_start = time.time()
+        try:
+            ollama_embedder = OllamaEmbeddingFunction(model=current_embed_model)
+            query_embedding = ollama_embedder.embed_query(question)
+            emb_duration_ms = (time.time() - emb_start) * 1000
+            emb_dims = len(query_embedding) if isinstance(query_embedding, list) else 384
+            embedder_req = {
+                "model": current_embed_model,
+                "endpoint": f"{config.OLLAMA_BASE_URL}/api/embeddings",
+                "method": "POST",
+                "prompt": question
+            }
+            embedder_resp = {
+                "status_code": 200,
+                "dimensions": emb_dims,
+                "duration_ms": round(emb_duration_ms, 2)
+            }
+        except Exception as emb_err:
+            emb_duration_ms = (time.time() - emb_start) * 1000
+            embedder_req = {"model": current_embed_model, "prompt": question}
+            embedder_resp = {"error": str(emb_err)}
+
+        log_event(
+            event_type="Embedder",
+            invoker="Agent",
+            target=f"Local Ollama ({current_embed_model})",
+            short_description=f"Computed vector embedding via Ollama ({current_embed_model})",
+            payload={
+                "request": embedder_req,
+                "response": embedder_resp
+            },
+            conversation_id=conversation_id,
+            duration_ms=emb_duration_ms,
+            status="success" if "error" not in embedder_resp else "error"
+        )
+
+        embedder_component = {
+            "name": "Embedder",
+            "role": "Local Vectorizer",
+            "icon": "🧠",
+            "status": "success" if "error" not in embedder_resp else "error",
+            "duration_ms": round(emb_duration_ms, 2),
+            "description": f"Generated vector embedding using local Ollama model '{current_embed_model}'",
+            "request": embedder_req,
+            "response": embedder_resp
+        }
+
+        # 3. Vector Store Component: Semantic search in ChromaDB
+        vs_start = time.time()
         retrieved_chunks = vector_store.query(question, top_k=top_k)
+        vs_duration_ms = (time.time() - vs_start) * 1000
+
+        vs_req = {
+            "query": question,
+            "top_k": top_k,
+            "collection": "private_docs"
+        }
+        vs_resp = {
+            "retrieved_count": len(retrieved_chunks),
+            "sources": [
+                {
+                    "source": c.get("metadata", {}).get("source"),
+                    "title": c.get("metadata", {}).get("title"),
+                    "score": round(float(c.get("score", 0.0)), 3),
+                    "preview": (c.get("content", "")[:120] + "...") if len(c.get("content", "")) > 120 else c.get("content", "")
+                }
+                for c in retrieved_chunks
+            ]
+        }
+
+        log_event(
+            event_type="Vector Store",
+            invoker="Agent",
+            target="ChromaDB (database/chroma_db)",
+            short_description=f"Searched vector store (retrieved {len(retrieved_chunks)} chunks)",
+            payload={
+                "request": vs_req,
+                "response": vs_resp
+            },
+            conversation_id=conversation_id,
+            duration_ms=vs_duration_ms,
+            status="success"
+        )
+
+        vector_store_component = {
+            "name": "Vector Store",
+            "role": "ChromaDB Retriever",
+            "icon": "📁",
+            "status": "success",
+            "duration_ms": round(vs_duration_ms, 2),
+            "description": f"Retrieved {len(retrieved_chunks)} relevant chunks from private vector storage",
+            "request": vs_req,
+            "response": vs_resp
+        }
+
+        # 4. Tools & External API Components: Check skills, execute tool scripts, and log external APIs
+        skill_exec = execute_skill_tools_if_relevant(question, retrieved_chunks, conversation_id=conversation_id)
+        live_tool_chunks = skill_exec.get("chunks", []) if isinstance(skill_exec, dict) else []
+        tool_components = skill_exec.get("components", []) if isinstance(skill_exec, dict) else []
+
+        if live_tool_chunks:
+            retrieved_chunks = live_tool_chunks + retrieved_chunks
 
         if not retrieved_chunks:
+            answer = "No documents have been indexed into the private vector database yet, or no relevant matches were found. Please ingest a URL or local directory first in the Ingestion tab."
+            total_duration_ms = (time.time() - query_start_time) * 1000
+
+            agent_resp_payload = {
+                "answer": answer,
+                "total_duration_ms": round(total_duration_ms, 2)
+            }
+            log_event(
+                event_type="Agent Response",
+                invoker="Agent",
+                target="User",
+                short_description="No documents or skills matched query",
+                payload={"request": agent_req_payload, "response": agent_resp_payload},
+                conversation_id=conversation_id,
+                duration_ms=total_duration_ms,
+                status="success"
+            )
+
+            log_conversation(
+                conversation_id=conversation_id,
+                user_query=question,
+                agent_response=answer,
+                duration_ms=total_duration_ms
+            )
+
+            agent_component = {
+                "name": "Agent",
+                "role": "Orchestrator",
+                "icon": "🤖",
+                "status": "success",
+                "duration_ms": round(total_duration_ms, 2),
+                "description": "Agent coordinated query parsing and vector database search",
+                "request": agent_req_payload,
+                "response": agent_resp_payload
+            }
+
             return jsonify({
-                "answer": "No documents have been indexed into the private vector database yet, or no relevant matches were found. Please ingest a URL or local directory first in Tab 1.",
+                "conversation_id": conversation_id,
+                "answer": answer,
                 "sources": [],
                 "model": "none",
-                "duration_ms": 0
+                "duration_ms": round(total_duration_ms, 2),
+                "components": [agent_component, embedder_component, vector_store_component]
             })
 
-        # 2. Call Google AI Studio Gemma model from backend Python code
-        response = gemma_service.answer_question(question, retrieved_chunks)
+        # 5. LLM Component: Call Google AI Studio model from backend Python code
+        response = gemma_service.answer_question(
+            question,
+            retrieved_chunks,
+            model=selected_model,
+            conversation_id=conversation_id
+        )
+
+        total_duration_ms = (time.time() - query_start_time) * 1000
+        answer_text = response.get("answer", "")
+        llm_component = response.get("component")
+
+        # 6. Agent Component: Log final Agent Response to User
+        agent_resp_payload = {
+            "answer": answer_text,
+            "model": response.get("model"),
+            "sources_count": len(response.get("sources", [])),
+            "total_duration_ms": round(total_duration_ms, 2)
+        }
+        log_event(
+            event_type="Agent Response",
+            invoker="Agent",
+            target="User",
+            short_description=f"Delivered grounded response ({round(total_duration_ms)}ms)",
+            payload={
+                "request": agent_req_payload,
+                "response": agent_resp_payload
+            },
+            conversation_id=conversation_id,
+            duration_ms=total_duration_ms,
+            status="success"
+        )
+
+        agent_component = {
+            "name": "Agent",
+            "role": "Orchestrator",
+            "icon": "🤖",
+            "status": "success",
+            "duration_ms": round(total_duration_ms, 2),
+            "description": f"Agent dispatched query through vector search, tools, and grounded LLM synthesis ({round(total_duration_ms)}ms)",
+            "request": agent_req_payload,
+            "response": agent_resp_payload
+        }
+
+        # 7. Record conversation in database/conversations.json
+        log_conversation(
+            conversation_id=conversation_id,
+            user_query=question,
+            agent_response=answer_text,
+            duration_ms=total_duration_ms
+        )
+
+        # Assemble full list of all components involved in generating this message
+        all_components = [agent_component, embedder_component, vector_store_component]
+        if tool_components:
+            all_components.extend(tool_components)
+        if llm_component:
+            all_components.append(llm_component)
 
         return jsonify({
             "status": "success",
+            "conversation_id": conversation_id,
             "question": question,
-            "answer": response.get("answer"),
+            "answer": answer_text,
             "model": response.get("model"),
             "sources": response.get("sources"),
-            "duration_ms": response.get("duration_ms"),
-            "log_id": response.get("log_id")
+            "duration_ms": round(total_duration_ms, 2),
+            "log_id": response.get("log_id"),
+            "components": all_components
         })
 
     except Exception as e:
+        total_duration_ms = (time.time() - query_start_time) * 1000
+        log_event(
+            event_type="Agent Error",
+            invoker="Agent",
+            target="User",
+            short_description=f"Query failure: {str(e)}",
+            payload={"request": {"question": question}, "response": {"error": str(e)}},
+            conversation_id=conversation_id,
+            duration_ms=total_duration_ms,
+            status="error"
+        )
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/skills", methods=["GET"])
+def get_skills_list():
+    """Return discovered skills and their scripts/metadata."""
+    skills = get_available_skills()
+    return jsonify({
+        "status": "success",
+        "count": len(skills),
+        "skills": skills
+    })
+
+
+@app.route("/api/skills/sync", methods=["POST"])
+def sync_skills():
+    """Manually trigger discovery and vector indexing of all skills."""
+    result = auto_index_skills_into_db()
+    return jsonify(result)
+
+
+@app.route("/api/conversations", methods=["GET"])
+def list_conversations():
+    """Return all recorded user-agent conversations."""
+    limit = int(request.args.get("limit", 100))
+    convs = get_conversations(limit=limit)
+    return jsonify({
+        "status": "success",
+        "count": len(convs),
+        "conversations": convs
+    })
+
+
+@app.route("/api/conversations/<conv_id>/events", methods=["GET"])
+def list_conversation_events(conv_id):
+    """Return all invocation events for a specific conversation."""
+    events = get_conversation_events(conv_id)
+    return jsonify({
+        "status": "success",
+        "conversation_id": conv_id,
+        "count": len(events),
+        "events": events
+    })
 
 
 @app.route("/api/logs", methods=["GET"])
 def logs():
     """
-    Page 3 backend: Fetch logged calls from database/logs.json.
+    Page 3 backend: Fetch logged calls and events from database/logs.json.
     """
-    limit = int(request.args.get("limit", 100))
+    limit = int(request.args.get("limit", 200))
     call_type = request.args.get("type", "").strip() or None
-    entries = get_logs(limit=limit, call_type=call_type)
+    conv_id = request.args.get("conversation_id", "").strip() or None
+    entries = get_logs(limit=limit, call_type=call_type, conversation_id=conv_id)
     return jsonify({
         "status": "success",
         "count": len(entries),
@@ -145,7 +564,12 @@ def stats():
     """
     Fetch comprehensive statistics about vector database and logs.
     """
-    db_stats = vector_store.get_stats()
+    try:
+        db_stats = vector_store.get_stats()
+    except Exception as e:
+        print(f"[Stats] Warning getting stats: {e}. Re-initializing client...")
+        vector_store._init_client()
+        db_stats = vector_store.get_stats()
     all_logs = get_logs(limit=1000)
     
     # Calculate log counts by type
@@ -183,6 +607,62 @@ def reset_db():
     if success:
         return jsonify({"status": "success", "message": "Vector database reset successfully."})
     return jsonify({"error": "Failed to reset vector database."}), 500
+
+
+@app.route("/api/embedder/models", methods=["GET"])
+def get_embedders():
+    """Return currently active embedder model and catalog of supported Ollama models."""
+    catalog = get_embedder_catalog(config.OLLAMA_BASE_URL)
+    return jsonify({
+        "status": "success",
+        "current_model": catalog["current_model"],
+        "models": catalog["models"]
+    })
+
+
+@app.route("/api/embedder/change", methods=["POST"])
+def change_embedder():
+    """
+    Switch embedder model:
+    Requires confirmation_phrase == 'Change to <new_model>'.
+    Purges all documents in vector store, updates config in services/, and sets new active embedder.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    new_model = data.get("new_model", "").strip()
+    confirmation_phrase = data.get("confirmation_phrase", "").strip()
+
+    if not new_model:
+        return jsonify({"error": "Field 'new_model' is required."}), 400
+
+    expected_phrase = f"Change to {new_model}"
+    if confirmation_phrase != expected_phrase:
+        return jsonify({
+            "error": f"Confirmation phrase mismatch. Expected '{expected_phrase}', received '{confirmation_phrase}'."
+        }), 400
+
+    # Switch model in vector store (purges Chroma collection & updates services/embedder_config.json)
+    success = vector_store.switch_embedder(new_model)
+    if not success:
+        return jsonify({"error": f"Failed to switch embedder to '{new_model}'."}), 500
+
+    log_call(
+        call_type="embedder_model_changed",
+        arguments={
+            "new_model": new_model,
+            "confirmation_phrase": confirmation_phrase
+        },
+        response={
+            "status": "purged_and_switched",
+            "active_model": new_model
+        },
+        status="success"
+    )
+
+    return jsonify({
+        "status": "success",
+        "message": f"Successfully switched embedding model to '{new_model}'. Vector database was cleared.",
+        "current_model": new_model
+    })
 
 
 @app.route("/api/logs/clear", methods=["POST"])

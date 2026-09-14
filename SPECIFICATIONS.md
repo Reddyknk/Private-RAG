@@ -6,7 +6,10 @@
 4. All of the backend code should be written in python, including local ollama, the web app should be built using flask.
 5. All calls to external resources like Google AI Studio or any external API should be done from the backend python code, not from the frontend.
 6. All the calls to ollama or external resources should be logged in database/logs.json. The log should include the time of the call, the type of the call, the arguments passed to the call, and the response from the call. Exclude the vector or non-text content in the call.
-7. Create a README.md with a brief description about:
+7. Add agent skills capability following the SKILL_SPEC.md file. Automatically discover, embed and index skills when the web app starts. Use local ollama to create the vector database for skills.Create the following skills:
+   - get the time and weather of the city from the site that doesn't require API key
+   - get the list of stocks with the highest percentage increase or lowest percentage decrease based on the chat question
+8. Create a README.md with a brief description about:
    - what this system does
    - how to install the components needed
    - how to start all the services

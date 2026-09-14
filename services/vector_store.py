@@ -15,6 +15,7 @@ class VectorStoreService:
     def __init__(self, persist_dir: str = str(CHROMA_PERSIST_DIR)):
         self.persist_dir = persist_dir
         self.embedder = OllamaEmbeddingFunction()
+        self._collection = None
         self._init_client()
 
     def _init_client(self):
@@ -23,11 +24,23 @@ class VectorStoreService:
             path=self.persist_dir,
             settings=Settings(anonymized_telemetry=False)
         )
-        self.collection = self.client.get_or_create_collection(
+        self._collection = self.client.get_or_create_collection(
             name=COLLECTION_NAME,
             embedding_function=self.embedder,
             metadata={"hnsw:space": "cosine"}
         )
+
+    @property
+    def collection(self):
+        """Safely return collection, recovering automatically if collection ID was recreated on disk."""
+        try:
+            if self._collection is not None:
+                self._collection.count()
+                return self._collection
+        except Exception:
+            pass
+        self._init_client()
+        return self._collection
 
     def add_documents(self, documents: List[Document], batch_size: int = 20) -> Dict[str, Any]:
         """
@@ -135,17 +148,49 @@ class VectorStoreService:
             "sources_list": sorted(list(sources))[:10],
             "database_dir": str(DATABASE_DIR),
             "db_size_mb": round(db_size_bytes / (1024 * 1024), 2),
-            "collection_name": COLLECTION_NAME
+            "collection_name": COLLECTION_NAME,
+            "embedder_model": self.embedder.model
         }
 
     def reset_database(self) -> bool:
         """Clear all records from the vector collection and recreate."""
         try:
-            self.client.delete_collection(name=COLLECTION_NAME)
+            try:
+                self.client.delete_collection(name=COLLECTION_NAME)
+            except Exception:
+                pass
             self._init_client()
             return True
         except Exception as e:
             print(f"[VectorStore] Reset error: {e}")
+            return False
+
+    def switch_embedder(self, new_model: str) -> bool:
+        """
+        Switch to a new embedding model:
+        1. Purge/reset existing vector collection to avoid dimension mismatch.
+        2. Update persisted configuration in services/embedder_config.json.
+        3. Re-initialize embedder and ChromaDB collection.
+        """
+        from services.embedder_manager import save_embedder_model
+        try:
+            # Delete old collection
+            try:
+                self.client.delete_collection(name=COLLECTION_NAME)
+            except Exception:
+                pass
+
+            # Update embedder model
+            self.embedder = OllamaEmbeddingFunction(model=new_model)
+
+            # Persist to services/embedder_config.json
+            save_embedder_model(new_model)
+
+            # Re-initialize collection with new embedding function
+            self._init_client()
+            return True
+        except Exception as e:
+            print(f"[VectorStore] Error switching embedder to {new_model}: {e}")
             return False
 
 

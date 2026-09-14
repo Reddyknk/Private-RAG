@@ -1,16 +1,21 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Private RAG Studio | Local Vector Database & Gemma QA</title>
-    <meta name="description" content="Local private Retrieval-Augmented Generation system with ChromaDB vector storage and Google AI Studio Gemma answers.">
+    <meta name="description"
+        content="Local private Retrieval-Augmented Generation system with ChromaDB vector storage and Google AI Studio Gemma answers.">
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
+
 <body>
     <!-- App Container -->
     <div class="app-layout">
@@ -19,7 +24,7 @@
             <div class="brand">
                 <div class="brand-icon">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
                     </svg>
                 </div>
                 <div class="brand-text">
@@ -30,15 +35,18 @@
 
             <!-- Three Main Switchable Tabs at the top of the window -->
             <nav class="top-nav-tabs" role="tablist" id="mainTabNav">
-                <button class="nav-tab active" id="tabBtnIngest" role="tab" aria-selected="true" aria-controls="pageIngest" onclick="switchTab('pageIngest')">
-                    <span class="tab-icon">📥</span>
-                    <span class="tab-label">1. Vector DB Ingestion</span>
-                </button>
-                <button class="nav-tab" id="tabBtnQuery" role="tab" aria-selected="false" aria-controls="pageQuery" onclick="switchTab('pageQuery')">
+                <button class="nav-tab active" id="tabBtnQuery" role="tab" aria-selected="true"
+                    aria-controls="pageQuery" onclick="switchTab('pageQuery')">
                     <span class="tab-icon">💬</span>
-                    <span class="tab-label">2. Gemma RAG Query</span>
+                    <span class="tab-label">1. Chat</span>
                 </button>
-                <button class="nav-tab" id="tabBtnLogs" role="tab" aria-selected="false" aria-controls="pageLogs" onclick="switchTab('pageLogs')">
+                <button class="nav-tab" id="tabBtnIngest" role="tab" aria-selected="false" aria-controls="pageIngest"
+                    onclick="switchTab('pageIngest')">
+                    <span class="tab-icon">📥</span>
+                    <span class="tab-label">2. Vector DB Ingestion</span>
+                </button>
+                <button class="nav-tab" id="tabBtnLogs" role="tab" aria-selected="false" aria-controls="pageLogs"
+                    onclick="switchTab('pageLogs')">
                     <span class="tab-icon">📜</span>
                     <span class="tab-label">3. Audit Logs & DB Explorer</span>
                     <span class="log-count-pill" id="logBadgeCount">0</span>
@@ -56,12 +64,108 @@
 
         <!-- Main Content Area -->
         <main class="main-content">
-            <!-- PAGE 1: Vector Database Ingestion (URL or Local Directory) -->
-            <section class="page-view active" id="pageIngest" role="tabpanel" aria-labelledby="tabBtnIngest">
+            <!-- PAGE 1: Chat & Knowledge Synthesis -->
+            <section class="page-view active" id="pageQuery" role="tabpanel" aria-labelledby="tabBtnQuery">
+                <div class="page-header">
+                    <div class="page-title-group">
+                        <h2>Chat & Knowledge Synthesis</h2>
+                        <p class="subtitle">Ask questions on your private vector database.</p>
+                    </div>
+                    <div class="chat-model-selector-wrap">
+                        <label class="chat-model-label" for="chatModelSelect">
+                            <span class="model-sparkle">✨</span> Model:
+                        </label>
+                        <select id="chatModelSelect" class="chat-model-dropdown" onchange="handleChatModelChange(event)"
+                            title="Select Google AI Studio text model">
+                            <!-- Populated dynamically from /api/models -->
+                        </select>
+                        <span class="badge badge-success" id="activeModelTag">Grounded QA</span>
+                    </div>
+                </div>
+
+                <div class="content-grid chat-layout">
+                    <!-- Query Input & Chat Interface -->
+                    <div class="card glass-card qa-card">
+                        <!-- Conversation Display -->
+                        <div class="qa-feed" id="qaFeed">
+                            <!-- Welcome Banner -->
+                            <div class="qa-welcome-bubble">
+                                <div class="bubble-avatar">🤖</div>
+                                <div class="bubble-content">
+                                    <h3>Ready for your questions</h3>
+                                    <p>Your queries are embedded locally using <strong>Ollama</strong>, matched against
+                                        your private vector database in <code>database/</code>, and answered by your
+                                        selected model on Google AI Studio via backend Python code.</p>
+                                    <div class="sample-questions">
+                                        <span class="sample-label">Try asking:</span>
+                                        <button class="sample-btn"
+                                            onclick="fillQuestion('What is the time and weather in Tokyo?')">"What is
+                                            the time and weather in Tokyo?"</button>
+                                        <button class="sample-btn"
+                                            onclick="fillQuestion('Which stocks have the highest percentage increase?')">"Which
+                                            stocks have the highest percentage increase?"</button>
+                                        <button class="sample-btn"
+                                            onclick="fillQuestion('Which stocks have the lowest percentage decrease?')">"Which
+                                            stocks have the lowest percentage decrease?"</button>
+                                        <button class="sample-btn"
+                                            onclick="fillQuestion('What are the key concepts explained in the ingested documents?')">"What
+                                            are the key concepts in documents?"</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Question Input Form -->
+                        <form id="queryForm" class="qa-input-bar" onsubmit="handleQuery(event)">
+                            <div class="input-container">
+                                <textarea id="inputQuestion" class="query-textarea" rows="2"
+                                    placeholder="Type your question about the indexed documents..."
+                                    onkeydown="handleTextareaKey(event)" required></textarea>
+                            </div>
+                            <div class="qa-actions">
+                                <div class="topk-selector">
+                                    <label for="selectTopK">Top-K Context Chunks:</label>
+                                    <select id="selectTopK" class="select-input">
+                                        <option value="3">3 Chunks</option>
+                                        <option value="4" selected>4 Chunks</option>
+                                        <option value="6">6 Chunks</option>
+                                        <option value="8">8 Chunks</option>
+                                    </select>
+                                </div>
+                                <button type="submit" class="btn btn-primary" id="btnSubmitQuery">
+                                    <span class="btn-spinner" id="querySpinner" style="display: none;"></span>
+                                    <span class="btn-icon">➤</span>
+                                    <span class="btn-text">Send Question</span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Retrieved Sources & Evidence Inspector -->
+                    <div class="card glass-card context-card">
+                        <div class="card-header">
+                            <h3>Retrieved Context Evidence</h3>
+                            <span class="badge badge-private" id="retrievedCountBadge">0 Chunks</span>
+                        </div>
+                        <div class="context-body" id="contextBody">
+                            <div class="empty-state">
+                                <div class="empty-icon">🔍</div>
+                                <h4>No Context Retrieved Yet</h4>
+                                <p>Submit a question to see the exact document chunks retrieved from the local vector
+                                    database and provided to the model.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- PAGE 2: Vector Database Ingestion (URL or Local Directory) -->
+            <section class="page-view" id="pageIngest" role="tabpanel" aria-labelledby="tabBtnIngest">
                 <div class="page-header">
                     <div class="page-title-group">
                         <h2>Create Private Vector Database</h2>
-                        <p class="subtitle">Index documents from any web URL or local directory into your local private vector database saved in <code>database/</code>.</p>
+                        <p class="subtitle">Index documents from any web URL or local directory into your local private
+                            vector database saved in <code>database/</code>.</p>
                     </div>
                     <div class="quick-stats-bar" id="ingestQuickStats">
                         <div class="quick-stat-item">
@@ -84,7 +188,16 @@
                     <div class="card glass-card">
                         <div class="card-header">
                             <h3>Document Source Configuration</h3>
-                            <span class="badge badge-info">Local Ollama Embeddings</span>
+                            <div class="embedder-select-container">
+                                <label class="embedder-select-label" for="embedderSelect">
+                                    <span class="label-icon">🧠</span> Local Embedder:
+                                </label>
+                                <select id="embedderSelect" class="embedder-dropdown"
+                                    onchange="handleEmbedderDropdownChange(event)"
+                                    title="Select local Ollama embedding model">
+                                    <!-- Populated dynamically via JS -->
+                                </select>
+                            </div>
                         </div>
                         <form id="ingestForm" onsubmit="handleIngest(event)">
                             <!-- Source Type Radio / Toggle -->
@@ -92,11 +205,13 @@
                                 <label class="field-label">Source Type</label>
                                 <div class="segmented-control" role="radiogroup">
                                     <label class="segment-option">
-                                        <input type="radio" name="sourceType" value="url" id="radioUrl" checked onchange="toggleSourceTypeInputs()">
+                                        <input type="radio" name="sourceType" value="url" id="radioUrl" checked
+                                            onchange="toggleSourceTypeInputs()">
                                         <span class="segment-label">🌐 Web URL</span>
                                     </label>
                                     <label class="segment-option">
-                                        <input type="radio" name="sourceType" value="directory" id="radioDir" onchange="toggleSourceTypeInputs()">
+                                        <input type="radio" name="sourceType" value="directory" id="radioDir"
+                                            onchange="toggleSourceTypeInputs()">
                                         <span class="segment-label">📁 Local Directory</span>
                                     </label>
                                 </div>
@@ -104,21 +219,31 @@
 
                             <!-- Source Path Input -->
                             <div class="form-group" id="groupPath">
-                                <label class="field-label" for="inputPath" id="labelInputPath">Web URL to Crawl & Ingest</label>
+                                <label class="field-label" for="inputPath" id="labelInputPath">Web URL to Crawl &
+                                    Ingest</label>
                                 <div class="input-with-action">
-                                    <input type="text" id="inputPath" name="path" class="text-input" 
-                                           placeholder="https://en.wikipedia.org/wiki/Retrieval-augmented_generation" required>
+                                    <input type="text" id="inputPath" name="path" class="text-input"
+                                        placeholder="https://en.wikipedia.org/wiki/Retrieval-augmented_generation"
+                                        required>
                                 </div>
-                                <span class="input-hint" id="hintInputPath">Fetches article text, strips HTML tags, and breaks into vector chunks.</span>
+                                <span class="input-hint" id="hintInputPath">Fetches article text, strips HTML tags, and
+                                    breaks into vector chunks.</span>
                             </div>
 
                             <!-- Sample Quick Buttons -->
                             <div class="quick-samples-box">
                                 <span class="quick-title">Presets & Samples:</span>
                                 <div class="quick-tags">
-                                    <button type="button" class="tag-btn" onclick="setPreset('url', 'https://en.wikipedia.org/wiki/Artificial_intelligence')">Wikipedia: AI</button>
-                                    <button type="button" class="tag-btn" onclick="setPreset('url', 'https://docs.python.org/3/tutorial/index.html')">Python Tutorial</button>
-                                    <button type="button" class="tag-btn" onclick="setPreset('dir', './sample_docs')">Local: ./sample_docs</button>
+                                    <button type="button" class="tag-btn"
+                                        onclick="setPreset('url', 'https://en.wikipedia.org/wiki/Artificial_intelligence')">Wikipedia:
+                                        AI</button>
+                                    <button type="button" class="tag-btn"
+                                        onclick="setPreset('url', 'https://docs.python.org/3/tutorial/index.html')">Python
+                                        Tutorial</button>
+                                    <button type="button" class="tag-btn"
+                                        onclick="setPreset('dir', './sample_docs')">Local: ./sample_docs</button>
+                                    <button type="button" class="tag-btn" onclick="setPreset('dir', './skills')">Local:
+                                        ./skills</button>
                                 </div>
                             </div>
 
@@ -128,11 +253,13 @@
                                 <div class="settings-grid">
                                     <div class="form-group">
                                         <label class="field-label" for="inputChunkSize">Chunk Size (chars)</label>
-                                        <input type="number" id="inputChunkSize" class="text-input" value="800" min="200" max="4000" step="50">
+                                        <input type="number" id="inputChunkSize" class="text-input" value="800"
+                                            min="200" max="4000" step="50">
                                     </div>
                                     <div class="form-group">
                                         <label class="field-label" for="inputChunkOverlap">Overlap (chars)</label>
-                                        <input type="number" id="inputChunkOverlap" class="text-input" value="120" min="0" max="500" step="10">
+                                        <input type="number" id="inputChunkOverlap" class="text-input" value="120"
+                                            min="0" max="500" step="10">
                                     </div>
                                 </div>
                             </details>
@@ -152,7 +279,8 @@
                     <div class="card glass-card">
                         <div class="card-header">
                             <h3>Vector Storage Status</h3>
-                            <button class="btn btn-sm btn-outline-danger" id="btnResetDb" onclick="confirmResetDb()">Reset DB</button>
+                            <button class="btn btn-sm btn-outline-danger" id="btnResetDb"
+                                onclick="confirmResetDb()">Reset DB</button>
                         </div>
 
                         <!-- Ingestion Progress / Output Box -->
@@ -160,7 +288,8 @@
                             <div class="empty-state" id="ingestEmptyState">
                                 <div class="empty-icon">📁</div>
                                 <h4>No Ingestion In Progress</h4>
-                                <p>Select a URL or local directory on the left and click <strong>Generate Vector Database</strong> to index documents.</p>
+                                <p>Select a URL or local directory on the left and click <strong>Generate Vector
+                                        Database</strong> to index documents.</p>
                             </div>
 
                             <div class="active-status-card" id="ingestActiveCard" style="display: none;">
@@ -169,7 +298,8 @@
                                     <span class="status-time" id="ingestElapsed">0.0s</span>
                                 </div>
                                 <h4 id="ingestTitle">Extracting and chunking documents...</h4>
-                                <p class="status-message" id="ingestMessage">Sending chunks to local Ollama embedding engine...</p>
+                                <p class="status-message" id="ingestMessage">Sending chunks to local Ollama embedding
+                                    engine...</p>
                                 <div class="progress-bar-track">
                                     <div class="progress-bar-fill animated-stripes" id="ingestProgressBar"></div>
                                 </div>
@@ -185,81 +315,35 @@
                         </div>
                     </div>
                 </div>
-            </section>
 
-            <!-- PAGE 2: Private RAG Query & Gemma Answering -->
-            <section class="page-view" id="pageQuery" role="tabpanel" aria-labelledby="tabBtnQuery">
-                <div class="page-header">
-                    <div class="page-title-group">
-                        <h2>Private RAG Question Answering</h2>
-                        <p class="subtitle">Ask any question grounded strictly on your private vector database, synthesized by Google AI Studio's <strong>Gemma</strong> model.</p>
-                    </div>
-                    <div class="model-badge-card">
-                        <span class="model-tag">Model:</span>
-                        <strong id="activeGemmaModel">Google Gemma (AI Studio)</strong>
-                        <span class="badge badge-success">Direct Grounded QA</span>
-                    </div>
-                </div>
-
-                <div class="content-grid chat-layout">
-                    <!-- Query Input & Chat Interface -->
-                    <div class="card glass-card qa-card">
-                        <!-- Conversation Display -->
-                        <div class="qa-feed" id="qaFeed">
-                            <!-- Welcome Banner -->
-                            <div class="qa-welcome-bubble">
-                                <div class="bubble-avatar">🤖</div>
-                                <div class="bubble-content">
-                                    <h3>Ready for your questions</h3>
-                                    <p>Your queries are embedded locally using <strong>Ollama</strong>, matched against your private vector database in <code>database/</code>, and answered by <strong>Gemma</strong> on Google AI Studio via backend Python code.</p>
-                                    <div class="sample-questions">
-                                        <span class="sample-label">Try asking:</span>
-                                        <button class="sample-btn" onclick="fillQuestion('What are the key concepts explained in the ingested documents?')">"What are the key concepts explained in the ingested documents?"</button>
-                                        <button class="sample-btn" onclick="fillQuestion('Summarize the main points and findings from the context.')">"Summarize the main points and findings."</button>
-                                    </div>
-                                </div>
-                            </div>
+                <!-- Supported Ollama Embedding Models Reference Section -->
+                <div class="card glass-card embedders-reference-card">
+                    <div class="card-header">
+                        <div class="card-header-titles">
+                            <h3>Supported Ollama Embedding Models</h3>
+                            <p class="section-desc">Local models compatible with Private RAG vectorization. Select a
+                                model from the dropdown above to use it.</p>
                         </div>
-
-                        <!-- Question Input Form -->
-                        <form id="queryForm" class="qa-input-bar" onsubmit="handleQuery(event)">
-                            <div class="input-container">
-                                <textarea id="inputQuestion" class="query-textarea" rows="2" 
-                                          placeholder="Type your question about the indexed documents..." 
-                                          onkeydown="handleTextareaKey(event)" required></textarea>
-                            </div>
-                            <div class="qa-actions">
-                                <div class="topk-selector">
-                                    <label for="selectTopK">Top-K Context Chunks:</label>
-                                    <select id="selectTopK" class="select-input">
-                                        <option value="3">3 Chunks</option>
-                                        <option value="4" selected>4 Chunks</option>
-                                        <option value="6">6 Chunks</option>
-                                        <option value="8">8 Chunks</option>
-                                    </select>
-                                </div>
-                                <button type="submit" class="btn btn-primary" id="btnSubmitQuery">
-                                    <span class="btn-spinner" id="querySpinner" style="display: none;"></span>
-                                    <span class="btn-icon">➤</span>
-                                    <span class="btn-text">Ask Gemma</span>
-                                </button>
-                            </div>
-                        </form>
+                        <div class="header-action-group">
+                            <span class="badge badge-private">Local Ollama Vectorization</span>
+                        </div>
                     </div>
-
-                    <!-- Retrieved Sources & Evidence Inspector -->
-                    <div class="card glass-card context-card">
-                        <div class="card-header">
-                            <h3>Retrieved Context Evidence</h3>
-                            <span class="badge badge-private" id="retrievedCountBadge">0 Chunks</span>
-                        </div>
-                        <div class="context-body" id="contextBody">
-                            <div class="empty-state">
-                                <div class="empty-icon">🔍</div>
-                                <h4>No Context Retrieved Yet</h4>
-                                <p>Submit a question to see the exact document chunks retrieved from the local vector database and provided to Gemma.</p>
-                            </div>
-                        </div>
+                    <div class="table-responsive">
+                        <table class="embedder-models-table">
+                            <thead>
+                                <tr>
+                                    <th>Model Name</th>
+                                    <th>Dimensions</th>
+                                    <th>Context Window</th>
+                                    <th>Size</th>
+                                    <th>Recommended Use Case</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="embeddersTableBody">
+                                <!-- Populated dynamically from API -->
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </section>
@@ -269,7 +353,8 @@
                 <div class="page-header">
                     <div class="page-title-group">
                         <h2>System Audit Logs & Call Inspector</h2>
-                        <p class="subtitle">Complete audit trail stored in <code>database/logs.json</code> capturing timestamp, call type, arguments, and responses.</p>
+                        <p class="subtitle">Complete audit trail stored in <code>database/logs.json</code> capturing
+                            timestamp, call type, arguments, and responses.</p>
                     </div>
                     <div class="logs-action-bar">
                         <button class="btn btn-outline" onclick="loadLogs()">
@@ -313,43 +398,92 @@
                     </div>
                 </div>
 
-                <!-- Filter and Search Bar -->
-                <div class="card glass-card logs-table-card">
-                    <div class="table-toolbar">
-                        <div class="filter-group">
-                            <label for="filterCallType">Filter Type:</label>
-                            <select id="filterCallType" class="select-input" onchange="filterLogs()">
-                                <option value="">All Call Types</option>
-                                <option value="google_ai_studio_gemma">Google AI Studio (Gemma)</option>
-                                <option value="local_ollama_embedding">Local Ollama Single Embed</option>
-                                <option value="local_ollama_embed_batch">Local Ollama Batch Embed</option>
-                                <option value="external_url_fetch">External URL Fetch</option>
-                            </select>
+                <!-- Two-Table Layout Container for Conversations and Invocations -->
+                <div class="logs-tables-container" style="display: flex; flex-direction: column; gap: 24px;">
+                    <!-- TABLE 1: Conversations Table -->
+                    <div class="card glass-card logs-table-card">
+                        <div class="card-header">
+                            <div class="card-header-titles">
+                                <h3>1. User Conversations</h3>
+                                <p class="section-desc">Click a conversation row to view all associated events in the
+                                    timeline below.</p>
+                            </div>
+                            <span class="badge badge-private" id="convCountBadge">0 Conversations</span>
                         </div>
-                        <div class="search-group">
-                            <input type="text" id="logSearchInput" class="text-input" placeholder="Search arguments or response..." oninput="filterLogs()">
+                        <div class="table-responsive">
+                            <table class="data-table" id="conversationsTable">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 18%;">Conversation ID</th>
+                                        <th style="width: 20%;">Timestamp</th>
+                                        <th style="width: 31%;">User Query</th>
+                                        <th style="width: 31%;">Agent Response</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="conversationsTableBody">
+                                    <tr>
+                                        <td colspan="4" class="text-center text-muted" style="padding: 24px;">Loading
+                                            conversations from database/conversations.json...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 
-                    <!-- Logs Table -->
-                    <div class="table-responsive">
-                        <table class="data-table" id="logsTable">
-                            <thead>
-                                <tr>
-                                    <th>Timestamp (UTC)</th>
-                                    <th>Call Type</th>
-                                    <th>Status</th>
-                                    <th>Duration</th>
-                                    <th>Arguments Summary</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="logsTableBody">
-                                <tr>
-                                    <td colspan="6" class="text-center text-muted">Loading audit logs from database/logs.json...</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                    <!-- TABLE 2: Events Table -->
+                    <div class="card glass-card logs-table-card">
+                        <div class="card-header">
+                            <div class="card-header-titles">
+                                <h3>2. Conversation Events & Invocations</h3>
+                                <p class="section-desc" id="eventsTableSubtitle">Click any event row to inspect the full
+                                    JSON payload.</p>
+                            </div>
+                            <div class="events-filter-actions" style="display: flex; align-items: center; gap: 10px;">
+                                <span class="badge badge-info" id="selectedConvFilterBadge">All Events</span>
+                                <button type="button" class="btn btn-xs btn-outline" id="btnShowAllEvents"
+                                    onclick="showAllEvents()" style="display: none;">Show All Events</button>
+                            </div>
+                        </div>
+
+                        <!-- Table Toolbar for Events -->
+                        <div class="table-toolbar">
+                            <div class="filter-group">
+                                <label for="filterCallType">Event Type:</label>
+                                <select id="filterCallType" class="select-input" onchange="filterEvents()">
+                                    <option value="">All Event Types</option>
+                                    <option value="Agent">Agent</option>
+                                    <option value="LLM">LLM</option>
+                                    <option value="Embedder">Embedder</option>
+                                    <option value="Tool">Tools</option>
+                                    <option value="External API">External API</option>
+                                    <option value="Vector Store">Vector Store</option>
+                                </select>
+                            </div>
+                            <div class="search-group">
+                                <input type="text" id="logSearchInput" class="text-input" placeholder="Search events..."
+                                    oninput="filterEvents()">
+                            </div>
+                        </div>
+
+                        <div class="table-responsive">
+                            <table class="data-table" id="eventsTable">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 18%;">Timestamp</th>
+                                        <th style="width: 16%;">Event Type</th>
+                                        <th style="width: 12%;">Invoker</th>
+                                        <th style="width: 22%;">Target</th>
+                                        <th style="width: 32%;">Short Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="eventsTableBody">
+                                    <tr>
+                                        <td colspan="5" class="text-center text-muted" style="padding: 24px;">Select a
+                                            conversation above to inspect its events.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -358,35 +492,102 @@
 
     <!-- Payload Details Modal -->
     <div class="modal-overlay" id="payloadModal" style="display: none;" onclick="closeModalOnBackdrop(event)">
-        <div class="modal-dialog glass-card">
+        <div class="modal-dialog glass-card" style="max-width: 900px;">
             <div class="modal-header">
                 <div class="modal-title-group">
-                    <h3 id="modalTitle">Call Payload Details</h3>
+                    <h3 id="modalTitle">Invocation Event Details</h3>
                     <span class="badge" id="modalTypeBadge">Type</span>
                 </div>
                 <button class="modal-close-btn" onclick="closeModal()">&times;</button>
             </div>
             <div class="modal-meta-bar" id="modalMetaBar">
-                <!-- Timestamp & ID -->
+                <!-- Timestamp, Invoker, Target, Duration, ID -->
             </div>
             <div class="modal-body">
-                <div class="modal-section">
+                <div class="modal-section" id="modalDescSection" style="margin-bottom: 12px;">
                     <div class="section-header">
-                        <h4>Arguments Passed</h4>
-                        <button class="btn btn-xs btn-outline" onclick="copyModalJson('args')">Copy Args</button>
+                        <h4>Description</h4>
                     </div>
-                    <pre class="json-viewer" id="modalArgsJson"></pre>
+                    <p id="modalEventDescription"
+                        style="color: var(--text-primary); font-size: 13.5px; margin: 0; line-height: 1.5;"></p>
+                </div>
+                <!-- Dual Request & Response Split View -->
+                <div class="req-res-split" style="margin-bottom: 14px;">
+                    <div class="req-pane">
+                        <div class="pane-header">
+                            <span>📤 Request Payload</span>
+                            <button class="copy-mini-btn" onclick="copyModalSubField('request')">Copy Request</button>
+                        </div>
+                        <pre class="code-box-pre" id="modalRequestJson"></pre>
+                    </div>
+                    <div class="res-pane">
+                        <div class="pane-header">
+                            <span>📥 Response Payload</span>
+                            <button class="copy-mini-btn" onclick="copyModalSubField('response')">Copy Response</button>
+                        </div>
+                        <pre class="code-box-pre" id="modalResponseJson"></pre>
+                    </div>
                 </div>
                 <div class="modal-section">
                     <div class="section-header">
-                        <h4>Response Received</h4>
-                        <button class="btn btn-xs btn-outline" onclick="copyModalJson('response')">Copy Response</button>
+                        <h4>Complete Sanitized Event JSON</h4>
+                        <button class="btn btn-xs btn-outline" onclick="copyModalJson('all')">Copy Full JSON</button>
                     </div>
-                    <pre class="json-viewer" id="modalResponseJson"></pre>
+                    <pre class="json-viewer" id="modalArgsJson" style="max-height: 200px; overflow-y: auto;"></pre>
                 </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-outline" onclick="closeModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Model Change Warning Confirmation Modal -->
+    <div class="modal-overlay" id="modelChangeModal" style="display: none;"
+        onclick="closeModelChangeModalOnBackdrop(event)">
+        <div class="modal-dialog modal-dialog-warning glass-card">
+            <div class="modal-header modal-header-warning">
+                <div class="modal-title-group">
+                    <div class="warning-title-wrap">
+                        <span class="warning-icon-pill">⚠️</span>
+                        <div>
+                            <h3 id="modelChangeModalTitle">Warning: Change Vector Embedder Model</h3>
+                            <span class="badge badge-danger">Destructive Action</span>
+                        </div>
+                    </div>
+                </div>
+                <button class="modal-close-btn" onclick="cancelModelChange()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="warning-alert-box">
+                    <div class="alert-icon">⚠️</div>
+                    <div class="alert-text">
+                        <strong>Warning:</strong> Switching the embedding model changes the mathematical vector
+                        dimensions and coordinate space.
+                        <strong>All documents ingested earlier will not work properly and will be permanently deleted
+                            from the Vector Storage DB.</strong>
+                    </div>
+                </div>
+                <div class="confirmation-prompt-box">
+                    <p id="modelChangePromptText" class="prompt-instruction">
+                        To confirm, please type <code id="requiredConfirmPhrase"
+                            class="confirm-phrase-code">Change to &lt;model&gt;</code> in the box below:
+                    </p>
+                    <input type="text" id="confirmModelChangeInput" class="text-input confirm-text-input"
+                        placeholder="Type the exact phrase to confirm..." autocomplete="off"
+                        oninput="validateModelChangeInput()">
+                    <span class="input-hint" id="confirmMatchHint">Exact text match required to enable the OK
+                        button.</span>
+                </div>
+            </div>
+            <div class="modal-footer modal-footer-spaced">
+                <button type="button" class="btn btn-outline" id="btnCancelModelChange"
+                    onclick="cancelModelChange()">Cancel</button>
+                <button type="button" class="btn btn-danger" id="btnConfirmModelChange" disabled
+                    onclick="executeModelChange()">
+                    <span class="btn-spinner" id="modelChangeSpinner" style="display: none;"></span>
+                    <span class="btn-text">OK</span>
+                </button>
             </div>
         </div>
     </div>
@@ -400,4 +601,5 @@
     <!-- JavaScript Application Logic -->
     <script src="/static/js/app.js"></script>
 </body>
+
 </html>

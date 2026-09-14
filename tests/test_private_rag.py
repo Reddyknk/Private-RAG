@@ -79,7 +79,7 @@ class TestPrivateRAG(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertIn(b"Private", res.data)
         self.assertIn(b"Vector DB Ingestion", res.data)
-        self.assertIn(b"Gemma RAG Query", res.data)
+        self.assertIn(b"Chat", res.data)
         self.assertIn(b"Audit Logs", res.data)
 
         # Test health endpoint
@@ -87,6 +87,13 @@ class TestPrivateRAG(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertEqual(data["status"], "online")
+
+        # Test skills endpoint
+        res = self.client.get("/api/skills")
+        self.assertEqual(res.status_code, 200)
+        skills_data = res.get_json()
+        self.assertEqual(skills_data["status"], "success")
+        self.assertGreaterEqual(skills_data["count"], 2)
 
         # Test query endpoint
         res = self.client.post("/api/query", json={"question": "What is an autonomous AI agent?", "top_k": 2})
@@ -109,6 +116,110 @@ class TestPrivateRAG(unittest.TestCase):
         self.assertIn("vector_store", data)
         self.assertIn("logs_summary", data)
 
+        # Verify two tables in HTML for Audit Logs page
+        index_res = self.client.get("/")
+        self.assertIn(b"conversationsTable", index_res.data)
+        self.assertIn(b"eventsTable", index_res.data)
+
+        # Test conversations API
+        conv_res = self.client.get("/api/conversations")
+        self.assertEqual(conv_res.status_code, 200)
+        conv_data = conv_res.get_json()
+        self.assertEqual(conv_data["status"], "success")
+        self.assertGreater(conv_data["count"], 0)
+        first_conv = conv_data["conversations"][0]
+        self.assertIn("conversation_id", first_conv)
+        self.assertIn("user_query", first_conv)
+        self.assertIn("agent_response", first_conv)
+
+        # Test conversation events API
+        conv_id = first_conv["conversation_id"]
+        ev_res = self.client.get(f"/api/conversations/{conv_id}/events")
+        self.assertEqual(ev_res.status_code, 200)
+        ev_data = ev_res.get_json()
+        self.assertEqual(ev_data["status"], "success")
+        self.assertGreater(ev_data["count"], 0)
+
+    def test_06_redaction_and_async_logging(self):
+        """Test API key redaction and async logging with size constraints."""
+        from services.logger_service import log_event, flush_logs, _trim_to_fit
+
+        test_conv_id = "conv-redaction-test"
+        sample_secret = "AIzaSySecretTestKey12345678901234567890"
+        entry = log_event(
+            event_type="LLM Invocation",
+            invoker="Agent",
+            target="Google AI Studio",
+            short_description=f"Testing key {sample_secret} redaction",
+            payload={
+                "prompt": f"Please answer with key {sample_secret}",
+                "api_key": sample_secret,
+                "headers": {"x-goog-api-key": sample_secret, "Authorization": f"Bearer {sample_secret}"}
+            },
+            conversation_id=test_conv_id
+        )
+
+        flush_logs()
+
+        # Check in-memory payload
+        self.assertNotIn(sample_secret, json.dumps(entry["payload"]))
+        self.assertEqual(entry["payload"]["api_key"], "[REDACTED_API_KEY]")
+        self.assertEqual(entry["payload"]["headers"]["x-goog-api-key"], "[REDACTED_API_KEY]")
+
+        # Test 30MB trimming logic with dummy entries
+        records = [{"id": i, "content": "x" * 1000} for i in range(50)]
+        trimmed = _trim_to_fit(records, max_bytes=20000, target_bytes=10000)
+        self.assertLess(len(trimmed), len(records))
+
+    def test_07_all_components_logged_and_displayed(self):
+        """Verify Agent, LLM, Embedder, Tools, and External API are logged and returned in message."""
+        from services.logger_service import flush_logs
+
+        res = self.client.post("/api/query", json={
+            "question": "What is the time and weather in Tokyo?",
+            "top_k": 2
+        })
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["status"], "success")
+        self.assertIn("components", data)
+        self.assertIn("answer", data)
+
+        components = data["components"]
+        self.assertIsInstance(components, list)
+        self.assertGreaterEqual(len(components), 4)
+
+        comp_names = [c["name"] for c in components]
+        self.assertIn("Agent", comp_names)
+        self.assertIn("Embedder", comp_names)
+        self.assertIn("Vector Store", comp_names)
+        self.assertIn("Tool", comp_names)
+        self.assertIn("External API", comp_names)
+        self.assertIn("LLM", comp_names)
+
+        for c in components:
+            self.assertIn("request", c)
+            self.assertIn("response", c)
+            self.assertIn("status", c)
+            self.assertIn("duration_ms", c)
+
+        conv_id = data["conversation_id"]
+        flush_logs()
+
+        ev_res = self.client.get(f"/api/conversations/{conv_id}/events")
+        self.assertEqual(ev_res.status_code, 200)
+        events = ev_res.get_json()["events"]
+        event_types = [e.get("event_type") or e.get("type") for e in events]
+
+        self.assertTrue(any("Agent" in t for t in event_types))
+        self.assertTrue(any("Embedder" in t for t in event_types))
+        self.assertTrue(any("Vector" in t for t in event_types))
+        self.assertTrue(any("Tool" in t for t in event_types))
+        self.assertTrue(any("External API" in t for t in event_types))
+        self.assertTrue(any("LLM" in t or "gemma" in t for t in event_types))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

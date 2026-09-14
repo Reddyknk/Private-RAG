@@ -3,8 +3,9 @@ import requests
 from typing import List, Dict, Any, Optional
 from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
-from config import OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL
+from config import OLLAMA_BASE_URL
 from services.logger_service import log_call
+from services.embedder_manager import get_current_embedder_model
 
 
 class OllamaEmbeddingFunction(EmbeddingFunction):
@@ -13,9 +14,9 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
     and logs every call to database/logs.json.
     """
 
-    def __init__(self, base_url: str = OLLAMA_BASE_URL, model: str = OLLAMA_EMBED_MODEL):
+    def __init__(self, base_url: str = OLLAMA_BASE_URL, model: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
-        self.model = model
+        self.model = model or get_current_embedder_model()
 
     def __call__(self, input: Documents) -> Embeddings:
         """Embed a list of documents/texts using local Ollama."""
@@ -137,6 +138,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
 
 def check_ollama_health() -> Dict[str, Any]:
     """Check if local Ollama daemon is running and check model availability."""
+    current_model = get_current_embedder_model()
     try:
         resp = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=3)
         if resp.status_code == 200:
@@ -144,9 +146,9 @@ def check_ollama_health() -> Dict[str, Any]:
             return {
                 "available": True,
                 "models": models,
-                "default_embed_model": OLLAMA_EMBED_MODEL,
-                "embed_model_loaded": any(OLLAMA_EMBED_MODEL in m for m in models)
+                "default_embed_model": current_model,
+                "embed_model_loaded": any(current_model in m for m in models)
             }
     except Exception as e:
-        return {"available": False, "error": str(e)}
-    return {"available": False, "error": "Unexpected response"}
+        return {"available": False, "error": str(e), "default_embed_model": current_model}
+    return {"available": False, "error": "Unexpected response", "default_embed_model": current_model}

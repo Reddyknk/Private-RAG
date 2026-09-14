@@ -45,18 +45,84 @@ class GemmaService:
 
         return GEMMA_PRIMARY_MODEL
 
+    def get_available_text_models(self) -> List[Dict[str, Any]]:
+        """
+        Query Google AI Studio for all text generation models.
+        Returns a list of dicts: [{"id": "...", "name": "...", "description": "...", "is_default": bool}, ...]
+        """
+        preferred_default = self.get_best_gemma_model()
+
+        fallback_models = [
+            {"id": "models/gemma-4-26b-a4b-it", "name": "Gemma 4 26B A4B IT", "description": "High-capability open Gemma model from Google", "is_default": True},
+            {"id": "models/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "description": "Fast, high-performance multimodal and text model", "is_default": False},
+            {"id": "models/gemini-2.5-pro", "name": "Gemini 2.5 Pro", "description": "Advanced reasoning and complex synthesis", "is_default": False},
+            {"id": "models/gemma-4-31b-it", "name": "Gemma 4 31B IT", "description": "Instruction-tuned 31B Gemma model", "is_default": False},
+            {"id": "models/gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash-Lite", "description": "Ultra-lightweight, rapid response Gemini", "is_default": False},
+        ]
+
+        try:
+            models_list = list(self.client.models.list())
+            text_models = []
+            for m in models_list:
+                actions = getattr(m, 'supported_actions', []) or getattr(m, 'supported_generation_methods', []) or []
+                name = m.name
+                if 'generateContent' in actions:
+                    name_lower = name.lower()
+                    if 'embed' in name_lower or 'imagen' in name_lower or 'native-audio' in name_lower:
+                        continue
+
+                    display_name = getattr(m, 'display_name', '') or name.replace('models/', '')
+                    desc = getattr(m, 'description', '') or ''
+
+                    text_models.append({
+                        "id": name,
+                        "name": display_name,
+                        "description": desc,
+                        "is_default": (name == preferred_default or preferred_default in name)
+                    })
+
+            if text_models:
+                def sort_key(item):
+                    mid = item["id"].lower()
+                    if item.get("is_default"):
+                        return (0, mid)
+                    if "gemma-4-26b" in mid:
+                        return (1, mid)
+                    if "gemini-2.5-flash" in mid and "preview" not in mid:
+                        return (2, mid)
+                    if "gemini-2.5-pro" in mid and "preview" not in mid:
+                        return (3, mid)
+                    if "gemma" in mid:
+                        return (4, mid)
+                    if "gemini" in mid:
+                        return (5, mid)
+                    return (6, mid)
+
+                text_models.sort(key=sort_key)
+                has_default = any(m["is_default"] for m in text_models)
+                if not has_default and text_models:
+                    text_models[0]["is_default"] = True
+                return text_models
+
+        except Exception as e:
+            print(f"[GemmaService] Could not list models from Google AI Studio: {e}")
+
+        return fallback_models
+
     def answer_question(
         self,
         question: str,
         retrieved_chunks: List[Dict[str, Any]],
-        system_instruction: Optional[str] = None
+        model: Optional[str] = None,
+        system_instruction: Optional[str] = None,
+        conversation_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Generate an answer using Google AI Studio Gemma model, grounded strictly
+        Generate an answer using Google AI Studio Gemma/Gemini model, grounded strictly
         on retrieved document chunks from the private vector database.
         """
         start_time = time.time()
-        model_name = self.get_best_gemma_model()
+        model_name = model or self.get_best_gemma_model()
 
         # Build context from chunks
         context_blocks = []
@@ -143,15 +209,44 @@ class GemmaService:
                     "usage": usage_metadata
                 },
                 duration_ms=duration_ms,
-                status="success"
+                status="success",
+                conversation_id=conversation_id,
+                invoker="Agent",
+                target=f"Google AI Studio ({model_name})",
+                short_description=f"Prompted {model_name} for grounded QA synthesis"
             )
+
+            llm_component = {
+                "name": "LLM",
+                "role": "Grounded Generator",
+                "icon": "✨",
+                "status": "success",
+                "duration_ms": round(duration_ms, 2),
+                "description": f"Generated grounded response using {model_name}",
+                "request": {
+                    "model": model_name,
+                    "system_instruction": system_instruction or default_system_prompt,
+                    "question": question,
+                    "prompt_length_chars": len(user_content),
+                    "context_chunks_count": len(retrieved_chunks),
+                    "temperature": 0.2,
+                    "max_output_tokens": 2048
+                },
+                "response": {
+                    "model_used": model_name,
+                    "answer": answer_text,
+                    "usage": usage_metadata,
+                    "duration_ms": round(duration_ms, 2)
+                }
+            }
 
             return {
                 "answer": answer_text,
                 "model": model_name,
                 "sources": retrieved_chunks,
                 "log_id": log_entry.get("id"),
-                "duration_ms": round(duration_ms, 2)
+                "duration_ms": round(duration_ms, 2),
+                "component": llm_component
             }
 
         except Exception as e:
@@ -161,7 +256,11 @@ class GemmaService:
                 arguments=call_args,
                 response={"error": str(e)},
                 duration_ms=duration_ms,
-                status="error"
+                status="error",
+                conversation_id=conversation_id,
+                invoker="Agent",
+                target=f"Google AI Studio ({model_name})",
+                short_description=f"Error querying {model_name}"
             )
             raise
 
