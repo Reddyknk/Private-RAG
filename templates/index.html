@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" type="image/png" href="/static/images/AI_icon_s.png">
+    <link rel="icon" type="image/gif" href="/static/images/ai-brain-ani-32.gif">
     <title>Agent with RAG | Local Vector Database & Gemma QA</title>
     <meta name="description"
         content="Agent with RAG: Local Retrieval-Augmented Generation system with ChromaDB vector storage, Ollama embeddings, and Google AI Studio Gemma answers.">
@@ -23,7 +23,8 @@
         <!-- Top Navigation Header with Tabs -->
         <header class="app-header">
             <div class="brand">
-                <img src="/static/images/AI_icon.png" alt="Agent with RAG" class="brand-image-icon" width="36" height="36">
+                <img src="/static/images/ai-brain-ani-48.gif" alt="Agent with RAG" class="brand-image-icon" width="48"
+                    height="48">
                 <div class="brand-text">
                     <h1>Agent with <span class="gradient-text">RAG</span></h1>
                     <span class="badge badge-private">Air-Gapped Vector DB</span>
@@ -86,7 +87,8 @@
                                 <span class="endpoint-icon">🔗</span> API Endpoint:
                             </label>
                             <input type="text" id="inputCustomEndpoint" class="custom-endpoint-input"
-                                placeholder="http://127.0.0.1:8000/v1/chat/completions" value="http://127.0.0.1:8000/v1/chat/completions"
+                                placeholder="http://127.0.0.1:8000/v1/chat/completions"
+                                value="http://127.0.0.1:8000/v1/chat/completions"
                                 title="Custom private LLM API endpoint URL" spellcheck="false" autocomplete="off">
                         </div>
                         <span class="badge badge-success" id="activeModelTag">Grounded QA</span>
@@ -420,7 +422,8 @@
                             </div>
                             <span class="badge badge-private" id="convCountBadge">0 Conversations</span>
                         </div>
-                        <div class="table-responsive conversations-scroll-wrapper" id="conversationsTableScrollContainer">
+                        <div class="table-responsive conversations-scroll-wrapper"
+                            id="conversationsTableScrollContainer">
                             <table class="data-table" id="conversationsTable">
                                 <thead>
                                     <tr>
@@ -603,8 +606,7 @@
     </div>
 
     <!-- Server Shutdown Warning Confirmation Modal -->
-    <div class="modal-overlay" id="shutdownModal" style="display: none;"
-        onclick="closeShutdownModalOnBackdrop(event)">
+    <div class="modal-overlay" id="shutdownModal" style="display: none;" onclick="closeShutdownModalOnBackdrop(event)">
         <div class="modal-dialog modal-dialog-warning glass-card" style="max-width: 540px;">
             <div class="modal-header modal-header-warning">
                 <div class="modal-title-group">
@@ -622,11 +624,13 @@
                 <div class="warning-alert-box">
                     <div class="alert-icon">⚠️</div>
                     <div class="alert-text">
-                        <strong>Warning:</strong> Shutting down will terminate the server process and <strong>disable the application for all users</strong>.
+                        <strong>Warning:</strong> Shutting down will terminate the server process and <strong>disable
+                            the application for all users</strong>.
                     </div>
                 </div>
                 <p class="text-secondary" style="margin-top: 14px; font-size: 13.5px; line-height: 1.6;">
-                    All active sessions will be terminated and in-flight operations will stop. The application server will go offline and will need to be restarted manually on the host system to regain access.
+                    All active sessions will be terminated and in-flight operations will stop. The application server
+                    will go offline and will need to be restarted manually on the host system to regain access.
                 </p>
                 <p class="text-muted" style="margin-top: 10px; font-size: 13px;">
                     Are you sure you want to shut down the application?
@@ -635,8 +639,7 @@
             <div class="modal-footer modal-footer-spaced">
                 <button type="button" class="btn btn-outline" id="btnCancelShutdown"
                     onclick="closeShutdownModal()">Cancel</button>
-                <button type="button" class="btn btn-danger" id="btnConfirmShutdown"
-                    onclick="executeAppShutdown()">
+                <button type="button" class="btn btn-danger" id="btnConfirmShutdown" onclick="executeAppShutdown()">
                     <span class="btn-spinner" id="shutdownSpinner" style="display: none;"></span>
                     <span class="btn-text">⏻ Confirm Shut Down</span>
                 </button>
