@@ -90,9 +90,10 @@ class VectorStoreService:
             "status": "success"
         }
 
-    def query(self, query_text: str, top_k: int = 4) -> List[Dict[str, Any]]:
+    def query(self, query_text: str, top_k: int = 4, min_score: float = 0.25) -> List[Dict[str, Any]]:
         """
         Retrieve the top-k most semantically relevant document chunks for a query text.
+        Filters out low-confidence chunks where similarity score < min_score (default: 0.25 / 25%).
         """
         count = self.collection.count()
         if count == 0:
@@ -115,12 +116,13 @@ class VectorStoreService:
                 distance = distances[i] if i < len(distances) else 0.0
                 # Cosine similarity is 1 - cosine distance
                 similarity_score = max(0.0, 1.0 - distance)
-                matched_items.append({
-                    "content": docs[i],
-                    "metadata": metas[i] if i < len(metas) else {},
-                    "distance": round(distance, 4),
-                    "score": round(similarity_score, 4)
-                })
+                if similarity_score >= min_score:
+                    matched_items.append({
+                        "content": docs[i],
+                        "metadata": metas[i] if i < len(metas) else {},
+                        "distance": round(distance, 4),
+                        "score": round(similarity_score, 4)
+                    })
 
         return matched_items
 
@@ -145,7 +147,8 @@ class VectorStoreService:
         return {
             "total_chunks": total_chunks,
             "unique_sources": len(sources),
-            "sources_list": sorted(list(sources))[:10],
+            "sources_list": sorted(list(sources)),
+            "distinct_sources": sorted(list(sources)),
             "database_dir": str(DATABASE_DIR),
             "db_size_mb": round(db_size_bytes / (1024 * 1024), 2),
             "collection_name": COLLECTION_NAME,

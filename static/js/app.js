@@ -308,6 +308,12 @@ async function handleQuery(event) {
         };
         if (selectedChatModel) {
             payload.model = selectedChatModel;
+            if (selectedChatModel === "custom_model_api") {
+                const endpointInput = document.getElementById("inputCustomEndpoint");
+                if (endpointInput && endpointInput.value.trim()) {
+                    payload.custom_endpoint = endpointInput.value.trim();
+                }
+            }
         }
 
         const res = await fetch("/api/query", {
@@ -1064,7 +1070,7 @@ async function executeModelChange() {
 }
 
 // ==========================================
-// 7. Google AI Studio Chat Model Selection
+// 7. Google AI Studio Chat Model Selection & Custom LLM
 // ==========================================
 async function loadChatModels() {
     try {
@@ -1088,20 +1094,37 @@ async function loadChatModels() {
             }).join("");
         }
 
+        syncCustomEndpointVisibility();
         updateChatModelBadge();
     } catch (err) {
-        console.error("Failed to load Google AI Studio models:", err);
+        console.error("Failed to load models:", err);
     }
 }
 
 function handleChatModelChange(event) {
     selectedChatModel = event.target.value;
+    syncCustomEndpointVisibility();
     updateChatModelBadge();
     const modelName = getSelectedChatModelName();
     showToast(`Selected model: ${modelName}`, "info");
 }
 
+function syncCustomEndpointVisibility() {
+    const box = document.getElementById("customEndpointBox");
+    if (!box) return;
+    if (selectedChatModel === "custom_model_api") {
+        box.style.display = "flex";
+        const input = document.getElementById("inputCustomEndpoint");
+        if (input && !input.value) {
+            input.value = "http://127.0.0.1:8000/v1/chat/completions";
+        }
+    } else {
+        box.style.display = "none";
+    }
+}
+
 function getSelectedChatModelName() {
+    if (selectedChatModel === "custom_model_api") return "Custom Model API";
     const found = availableChatModels.find(m => m.id === selectedChatModel);
     if (found && found.name) return found.name;
     if (selectedChatModel) return selectedChatModel.replace("models/", "");
@@ -1111,9 +1134,107 @@ function getSelectedChatModelName() {
 function updateChatModelBadge() {
     const badge = document.getElementById("activeModelTag");
     if (!badge) return;
+    if (selectedChatModel === "custom_model_api") {
+        badge.textContent = "Custom Private LLM";
+        badge.title = "Direct private LLM endpoint execution";
+        badge.className = "badge badge-primary";
+        return;
+    }
+    badge.className = "badge badge-success";
     const found = availableChatModels.find(m => m.id === selectedChatModel);
     if (found) {
         badge.textContent = found.name.length > 22 ? found.name.slice(0, 20) + "..." : found.name;
         badge.title = `${found.id} - ${found.description || 'Google AI Studio text model'}`;
+    }
+}
+
+// ==========================================================================
+// Application Shutdown Handlers
+// ==========================================================================
+
+function openShutdownModal() {
+    const modal = document.getElementById("shutdownModal");
+    if (modal) {
+        modal.style.display = "flex";
+        document.body.style.overflow = "hidden";
+    }
+}
+
+function closeShutdownModal() {
+    const modal = document.getElementById("shutdownModal");
+    if (modal) {
+        modal.style.display = "none";
+        document.body.style.overflow = "";
+    }
+}
+
+function closeShutdownModalOnBackdrop(e) {
+    if (e.target && e.target.id === "shutdownModal") {
+        closeShutdownModal();
+    }
+}
+
+async function executeAppShutdown() {
+    const btn = document.getElementById("btnConfirmShutdown");
+    const cancelBtn = document.getElementById("btnCancelShutdown");
+    const spinner = document.getElementById("shutdownSpinner");
+
+    if (btn) btn.disabled = true;
+    if (cancelBtn) cancelBtn.disabled = true;
+    if (spinner) spinner.style.display = "inline-block";
+
+    try {
+        const resp = await fetch("/api/shutdown", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "shutdown" })
+        });
+        const data = await resp.json().catch(() => ({}));
+
+        const modalBody = document.querySelector("#shutdownModal .modal-body");
+        if (modalBody) {
+            modalBody.innerHTML = `
+                <div style="text-align: center; padding: 18px 8px;">
+                    <div style="font-size: 44px; margin-bottom: 12px;">🛑</div>
+                    <h3 style="color: #fda4af; margin-bottom: 8px; font-size: 18px;">Application Shut Down</h3>
+                    <p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6;">
+                        ${escapeHtml(data.message || "Agent with RAG server is shutting down. The application has been disabled.")}
+                    </p>
+                    <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 14px;">
+                        The server process is terminating and is no longer accessible. You may now close this browser tab.
+                    </p>
+                </div>
+            `;
+        }
+        const modalFooter = document.querySelector("#shutdownModal .modal-footer");
+        if (modalFooter) {
+            modalFooter.innerHTML = `<button type="button" class="btn btn-outline" onclick="closeShutdownModal()">Close Dialog</button>`;
+        }
+
+        // Update top status indicator to offline
+        const statusLabel = document.getElementById("backendStatusLabel");
+        const statusDot = document.querySelector("#backendStatusPill .status-dot");
+        if (statusLabel) statusLabel.textContent = "Server Offline";
+        if (statusDot) {
+            statusDot.className = "status-dot error";
+            statusDot.title = "Server has shut down";
+        }
+    } catch (err) {
+        console.warn("Shutdown request dispatched, server may have already stopped:", err);
+        const modalBody = document.querySelector("#shutdownModal .modal-body");
+        if (modalBody) {
+            modalBody.innerHTML = `
+                <div style="text-align: center; padding: 18px 8px;">
+                    <div style="font-size: 44px; margin-bottom: 12px;">🛑</div>
+                    <h3 style="color: #fda4af; margin-bottom: 8px; font-size: 18px;">Application Shut Down</h3>
+                    <p style="color: var(--text-secondary); font-size: 14px; line-height: 1.6;">
+                        Agent with RAG server process has terminated and is now offline.
+                    </p>
+                    <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 14px;">
+                        You may now close this browser tab.
+                    </p>
+                </div>
+            `;
+        }
     }
 }

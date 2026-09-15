@@ -158,7 +158,7 @@ Create or edit the `.env` file in the root directory of `privateRAG`:
 
 ```bash
 GEMINI_API_KEY=your-google-ai-studio-api-key-here
-PORT=5050
+PORT=8005
 FLASK_DEBUG=False
 ```
 
@@ -196,8 +196,8 @@ python app.py
 ```
 [Ollama] Daemon not detected at http://127.0.0.1:11434. Auto-starting 'ollama serve'...
 [Ollama] Daemon started successfully and is ready at http://127.0.0.1:11434!
-Starting Private RAG Server on port 5050...
- * Running on http://127.0.0.1:5050
+Starting Private RAG Server on port 8005...
+ * Running on http://127.0.0.1:8005
 ```
 
 > [!NOTE]
@@ -207,7 +207,7 @@ Starting Private RAG Server on port 5050...
 
 ### Access the Web Application
 Open your browser and navigate to:
-**`http://127.0.0.1:5050`**
+**`http://127.0.0.1:8005`**
 
 ---
 
@@ -255,7 +255,7 @@ When you are finished using the application, shut down the running services usin
 - **If running in the background**:
   - **Linux / macOS**:
     ```bash
-    fuser -k 5050/tcp 2>/dev/null || kill $(lsof -t -i:5050) 2>/dev/null || pkill -f "python app.py"
+    fuser -k 8005/tcp 2>/dev/null || kill $(lsof -t -i:8005) 2>/dev/null || pkill -f "python app.py"
     ```
   - **Windows PC (PowerShell)**:
     ```powershell

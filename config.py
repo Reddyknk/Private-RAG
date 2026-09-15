@@ -25,5 +25,5 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "all-minilm")
 
 # Web server configuration
-PORT = int(os.getenv("PORT", 5050)) # Port 5050 for Private RAG app
+PORT = int(os.getenv("PORT", 8005)) # Port 8005 for Private RAG app
 FLASK_DEBUG = os.getenv("FLASK_DEBUG", "True").lower() in ("true", "1", "yes")

@@ -1,8 +1,10 @@
 import os
+import re
 import shutil
 import subprocess
 import time
 import uuid
+import threading
 import requests
 from flask import Flask, render_template, request, jsonify
 
@@ -34,7 +36,29 @@ from services.skill_runner import (
 # Ensure embedder configuration exists in services/
 init_embedder_config()
 
+# Minimum relevance similarity score threshold for vector database chunks (0.25 = 25%)
+# Chunks below this threshold (e.g. 14.5%) are filtered out as irrelevant noise.
+MIN_RELEVANCE_SCORE = 0.25
 
+CONVERSATIONAL_GREETINGS = {
+    "hello", "hi", "hey", "howdy", "greetings", "hola", "bonjour",
+    "good morning", "good afternoon", "good evening", "good day",
+    "what can you do", "who are you", "what are you", "help",
+    "how are you", "hows it going", "whats up", "sup", "hi there", "hello there"
+}
+
+
+def is_conversational_greeting(text: str) -> bool:
+    """Detect if the user query is a greeting, polite pleasantry, or introductory question."""
+    cleaned = re.sub(r"[^\w\s]", "", text.strip().lower())
+    words = cleaned.split()
+    if not words:
+        return False
+    if cleaned in CONVERSATIONAL_GREETINGS:
+        return True
+    if len(words) <= 2 and words[0] in {"hello", "hi", "hey", "howdy", "greetings"}:
+        return True
+    return False
 
 import atexit
 import signal
@@ -235,6 +259,7 @@ def query_rag():
     question = data.get("question", "").strip()
     top_k = int(data.get("top_k", 4))
     selected_model = data.get("model", "").strip() or None
+    custom_endpoint = (data.get("custom_endpoint", "") or data.get("custom_model_api", "")).strip() or None
     conversation_id = data.get("conversation_id", "").strip() or f"conv-{uuid.uuid4().hex[:12]}"
 
     if not question:
@@ -248,6 +273,7 @@ def query_rag():
             "question": question,
             "top_k": top_k,
             "model": selected_model,
+            "custom_endpoint": custom_endpoint,
             "conversation_id": conversation_id,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }
@@ -313,18 +339,20 @@ def query_rag():
             "response": embedder_resp
         }
 
-        # 3. Vector Store Component: Semantic search in ChromaDB
+        # 3. Vector Store Component: Semantic search in ChromaDB (filtered by MIN_RELEVANCE_SCORE)
         vs_start = time.time()
-        retrieved_chunks = vector_store.query(question, top_k=top_k)
+        retrieved_chunks = vector_store.query(question, top_k=top_k, min_score=MIN_RELEVANCE_SCORE)
         vs_duration_ms = (time.time() - vs_start) * 1000
 
         vs_req = {
             "query": question,
             "top_k": top_k,
+            "min_score_threshold": MIN_RELEVANCE_SCORE,
             "collection": "private_docs"
         }
         vs_resp = {
             "retrieved_count": len(retrieved_chunks),
+            "min_score_threshold": MIN_RELEVANCE_SCORE,
             "sources": [
                 {
                     "source": c.get("metadata", {}).get("source"),
@@ -336,11 +364,17 @@ def query_rag():
             ]
         }
 
+        vs_desc = (
+            f"Retrieved {len(retrieved_chunks)} relevant chunk(s) from private vector storage (score ≥ {int(MIN_RELEVANCE_SCORE*100)}%)"
+            if retrieved_chunks else
+            f"Searched private vector storage (no chunks met the {int(MIN_RELEVANCE_SCORE*100)}% minimum relevance threshold)"
+        )
+
         log_event(
             event_type="Vector Store",
             invoker="Agent",
             target="ChromaDB (database/chroma_db)",
-            short_description=f"Searched vector store (retrieved {len(retrieved_chunks)} chunks)",
+            short_description=vs_desc,
             payload={
                 "request": vs_req,
                 "response": vs_resp
@@ -356,7 +390,7 @@ def query_rag():
             "icon": "📁",
             "status": "success",
             "duration_ms": round(vs_duration_ms, 2),
-            "description": f"Retrieved {len(retrieved_chunks)} relevant chunks from private vector storage",
+            "description": vs_desc,
             "request": vs_req,
             "response": vs_resp
         }
@@ -369,8 +403,19 @@ def query_rag():
         if live_tool_chunks:
             retrieved_chunks = live_tool_chunks + retrieved_chunks
 
-        if not retrieved_chunks:
-            answer = "No documents have been indexed into the private vector database yet, or no relevant matches were found. Please ingest a URL or local directory first in the Ingestion tab."
+        # Check for conversational greeting or general introduction query
+        is_greeting = is_conversational_greeting(question)
+
+        # For conversational greetings, do not pass irrelevant document chunks
+        if is_greeting:
+            retrieved_chunks = []
+
+        if not retrieved_chunks and not is_greeting:
+            answer = (
+                f"I searched your private vector database, but could not find any documents relevant to your query "
+                f"(all matches were below the {int(MIN_RELEVANCE_SCORE*100)}% relevance threshold). Please ensure relevant documents have been "
+                "ingested in the 'Vector DB Ingestion' tab, or ask a question related to your indexed knowledge base."
+            )
             total_duration_ms = (time.time() - query_start_time) * 1000
 
             agent_resp_payload = {
@@ -415,12 +460,24 @@ def query_rag():
                 "components": [agent_component, embedder_component, vector_store_component]
             })
 
-        # 5. LLM Component: Call Google AI Studio model from backend Python code
+        # 5. LLM Component: Call Google AI Studio model or custom endpoint from backend Python code
+        custom_system_prompt = None
+        if is_greeting:
+            custom_system_prompt = (
+                "You are a helpful, friendly, and privacy-preserving AI assistant for Agent with RAG. "
+                "The user is greeting you or initiating a conversation. "
+                "Respond warmly and courteously to their greeting, introduce yourself as the Agent with RAG Assistant, "
+                "and briefly let them know that you can answer questions grounded in their private vector database documents "
+                "or execute tools (such as live stock momentum and weather). Keep your response welcoming, clear, and concise."
+            )
+
         response = gemma_service.answer_question(
             question,
             retrieved_chunks,
             model=selected_model,
-            conversation_id=conversation_id
+            system_instruction=custom_system_prompt,
+            conversation_id=conversation_id,
+            custom_endpoint=custom_endpoint
         )
 
         total_duration_ms = (time.time() - query_start_time) * 1000
@@ -674,6 +731,39 @@ def clear_all_logs():
     return jsonify({"error": "Failed to clear audit logs."}), 500
 
 
+@app.route("/api/shutdown", methods=["POST"])
+def shutdown_app():
+    """
+    Shut down the application server cleanly.
+    Terminates background Ollama daemon if started by this application instance,
+    logs the event, and terminates the Flask server process.
+    """
+    log_event(
+        event_type="Server Shutdown",
+        invoker="User",
+        target="System",
+        short_description="User requested application shutdown via Web UI",
+        payload={"request": {"action": "shutdown"}, "response": {"status": "shutting_down"}},
+        status="success"
+    )
+
+    def _delayed_exit():
+        time.sleep(0.5)
+        shutdown_ollama_if_started_by_app()
+        try:
+            os.kill(os.getpid(), signal.SIGTERM)
+        except Exception as kill_err:
+            print(f"[Shutdown] Signal error: {kill_err}")
+            sys.exit(0)
+
+    threading.Thread(target=_delayed_exit, daemon=True).start()
+
+    return jsonify({
+        "status": "success",
+        "message": "Agent with RAG server is shutting down. The application has been disabled."
+    })
+
+
 if __name__ == "__main__":
-    print(f"Starting Private RAG Server on port {config.PORT}...")
+    print(f"Starting Agent with RAG Server on port {config.PORT}...")
     app.run(host="0.0.0.0", port=config.PORT, debug=config.FLASK_DEBUG)

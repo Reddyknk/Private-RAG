@@ -4,9 +4,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Private RAG Studio | Local Vector Database & Gemma QA</title>
+    <link rel="icon" type="image/png" href="/static/images/AI_icon_s.png">
+    <title>Agent with RAG | Local Vector Database & Gemma QA</title>
     <meta name="description"
-        content="Local private Retrieval-Augmented Generation system with ChromaDB vector storage and Google AI Studio Gemma answers.">
+        content="Agent with RAG: Local Retrieval-Augmented Generation system with ChromaDB vector storage, Ollama embeddings, and Google AI Studio Gemma answers.">
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -22,13 +23,9 @@
         <!-- Top Navigation Header with Tabs -->
         <header class="app-header">
             <div class="brand">
-                <div class="brand-icon">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-                    </svg>
-                </div>
+                <img src="/static/images/AI_icon.png" alt="Agent with RAG" class="brand-image-icon" width="36" height="36">
                 <div class="brand-text">
-                    <h1>Private<span class="gradient-text">RAG</span></h1>
+                    <h1>Agent with <span class="gradient-text">RAG</span></h1>
                     <span class="badge badge-private">Air-Gapped Vector DB</span>
                 </div>
             </div>
@@ -53,8 +50,13 @@
                 </button>
             </nav>
 
-            <!-- Status Indicator -->
-            <div class="header-status">
+            <!-- Status Indicator & App Shutdown Button -->
+            <div class="header-actions">
+                <button class="btn-shutdown-app" id="btnShutdownApp" onclick="openShutdownModal()"
+                    title="Shut down the application server and stop process">
+                    <span class="shutdown-power-icon">⏻</span>
+                    <span class="shutdown-label">Shut Down</span>
+                </button>
                 <div class="status-pill" id="backendStatusPill" title="Checking health...">
                     <span class="status-dot"></span>
                     <span class="status-label" id="backendStatusLabel">Connecting...</span>
@@ -76,9 +78,17 @@
                             <span class="model-sparkle">✨</span> Model:
                         </label>
                         <select id="chatModelSelect" class="chat-model-dropdown" onchange="handleChatModelChange(event)"
-                            title="Select Google AI Studio text model">
+                            title="Select text model or Custom Model API">
                             <!-- Populated dynamically from /api/models -->
                         </select>
+                        <div id="customEndpointBox" class="custom-endpoint-box" style="display: none;">
+                            <label class="custom-endpoint-label" for="inputCustomEndpoint">
+                                <span class="endpoint-icon">🔗</span> API Endpoint:
+                            </label>
+                            <input type="text" id="inputCustomEndpoint" class="custom-endpoint-input"
+                                placeholder="http://127.0.0.1:8000/v1/chat/completions" value="http://127.0.0.1:8000/v1/chat/completions"
+                                title="Custom private LLM API endpoint URL" spellcheck="false" autocomplete="off">
+                        </div>
                         <span class="badge badge-success" id="activeModelTag">Grounded QA</span>
                     </div>
                 </div>
@@ -410,7 +420,7 @@
                             </div>
                             <span class="badge badge-private" id="convCountBadge">0 Conversations</span>
                         </div>
-                        <div class="table-responsive">
+                        <div class="table-responsive conversations-scroll-wrapper" id="conversationsTableScrollContainer">
                             <table class="data-table" id="conversationsTable">
                                 <thead>
                                     <tr>
@@ -587,6 +597,48 @@
                     onclick="executeModelChange()">
                     <span class="btn-spinner" id="modelChangeSpinner" style="display: none;"></span>
                     <span class="btn-text">OK</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Server Shutdown Warning Confirmation Modal -->
+    <div class="modal-overlay" id="shutdownModal" style="display: none;"
+        onclick="closeShutdownModalOnBackdrop(event)">
+        <div class="modal-dialog modal-dialog-warning glass-card" style="max-width: 540px;">
+            <div class="modal-header modal-header-warning">
+                <div class="modal-title-group">
+                    <div class="warning-title-wrap">
+                        <span class="warning-icon-pill">⏻</span>
+                        <div>
+                            <h3 id="shutdownModalTitle">Shut Down Agent with RAG</h3>
+                            <span class="badge badge-danger">Critical Action</span>
+                        </div>
+                    </div>
+                </div>
+                <button class="modal-close-btn" onclick="closeShutdownModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="warning-alert-box">
+                    <div class="alert-icon">⚠️</div>
+                    <div class="alert-text">
+                        <strong>Warning:</strong> Shutting down will terminate the server process and <strong>disable the application for all users</strong>.
+                    </div>
+                </div>
+                <p class="text-secondary" style="margin-top: 14px; font-size: 13.5px; line-height: 1.6;">
+                    All active sessions will be terminated and in-flight operations will stop. The application server will go offline and will need to be restarted manually on the host system to regain access.
+                </p>
+                <p class="text-muted" style="margin-top: 10px; font-size: 13px;">
+                    Are you sure you want to shut down the application?
+                </p>
+            </div>
+            <div class="modal-footer modal-footer-spaced">
+                <button type="button" class="btn btn-outline" id="btnCancelShutdown"
+                    onclick="closeShutdownModal()">Cancel</button>
+                <button type="button" class="btn btn-danger" id="btnConfirmShutdown"
+                    onclick="executeAppShutdown()">
+                    <span class="btn-spinner" id="shutdownSpinner" style="display: none;"></span>
+                    <span class="btn-text">⏻ Confirm Shut Down</span>
                 </button>
             </div>
         </div>

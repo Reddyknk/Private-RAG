@@ -1,6 +1,7 @@
 import os
 import time
 from typing import List, Dict, Any, Optional
+import requests
 from google import genai
 from google.genai import types
 
@@ -48,16 +49,32 @@ class GemmaService:
     def get_available_text_models(self) -> List[Dict[str, Any]]:
         """
         Query Google AI Studio for all text generation models.
-        Returns a list of dicts: [{"id": "...", "name": "...", "description": "...", "is_default": bool}, ...]
+        Strictly filters out non-text models (image, speech/TTS, audio, transcription, music, robotics, etc.)
+        and appends the 'Custom Model API' option for private LLM endpoints.
         """
         preferred_default = self.get_best_gemma_model()
 
+        custom_option = {
+            "id": "custom_model_api",
+            "name": "Custom Model API",
+            "description": "User-defined private LLM API endpoint (e.g., local model server, vLLM, Ollama, OpenAI-compatible)",
+            "is_custom": True,
+            "is_default": False
+        }
+
         fallback_models = [
             {"id": "models/gemma-4-26b-a4b-it", "name": "Gemma 4 26B A4B IT", "description": "High-capability open Gemma model from Google", "is_default": True},
-            {"id": "models/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "description": "Fast, high-performance multimodal and text model", "is_default": False},
+            {"id": "models/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "description": "Fast, high-performance text model", "is_default": False},
             {"id": "models/gemini-2.5-pro", "name": "Gemini 2.5 Pro", "description": "Advanced reasoning and complex synthesis", "is_default": False},
             {"id": "models/gemma-4-31b-it", "name": "Gemma 4 31B IT", "description": "Instruction-tuned 31B Gemma model", "is_default": False},
             {"id": "models/gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash-Lite", "description": "Ultra-lightweight, rapid response Gemini", "is_default": False},
+            custom_option
+        ]
+
+        non_text_keywords = [
+            "image", "imagen", "tts", "audio", "native-audio", "transcribe",
+            "lyria", "music", "banana", "robotics", "computer-use", "deep-research",
+            "antigravity", "embed"
         ]
 
         try:
@@ -68,11 +85,12 @@ class GemmaService:
                 name = m.name
                 if 'generateContent' in actions:
                     name_lower = name.lower()
-                    if 'embed' in name_lower or 'imagen' in name_lower or 'native-audio' in name_lower:
-                        continue
-
                     display_name = getattr(m, 'display_name', '') or name.replace('models/', '')
                     desc = getattr(m, 'description', '') or ''
+                    combined_check = f"{name_lower} {display_name.lower()} {desc.lower()}"
+
+                    if any(kw in combined_check for kw in non_text_keywords):
+                        continue
 
                     text_models.append({
                         "id": name,
@@ -102,6 +120,8 @@ class GemmaService:
                 has_default = any(m["is_default"] for m in text_models)
                 if not has_default and text_models:
                     text_models[0]["is_default"] = True
+
+                text_models.append(custom_option)
                 return text_models
 
         except Exception as e:
@@ -109,46 +129,267 @@ class GemmaService:
 
         return fallback_models
 
+    def query_custom_llm(
+        self,
+        endpoint: str,
+        question: str,
+        retrieved_chunks: List[Dict[str, Any]],
+        system_instruction: Optional[str] = None,
+        conversation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Query a private or custom LLM via HTTP POST endpoint (e.g., local model_serv, vLLM, Ollama, OpenAI API).
+        """
+        start_time = time.time()
+        endpoint = endpoint.strip() if endpoint else "http://127.0.0.1:8000/v1/chat/completions"
+        if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
+            endpoint = "http://" + endpoint
+
+        # Smart endpoint normalization for local vLLM server
+        ep_lower = endpoint.lower().rstrip("/")
+        if ep_lower.endswith(":8000"):
+            endpoint = endpoint.rstrip("/") + "/v1/chat/completions"
+        elif ep_lower.endswith(":8000/v1"):
+            endpoint = endpoint.rstrip("/") + "/chat/completions"
+
+        # Build context from chunks
+        if retrieved_chunks:
+            context_blocks = []
+            for i, chunk in enumerate(retrieved_chunks, 1):
+                source = chunk.get("metadata", {}).get("source", "Unknown Source")
+                title = chunk.get("metadata", {}).get("title", source)
+                score = chunk.get("score", 0.0)
+                text = chunk.get("content", "")
+                context_blocks.append(
+                    f"--- [Document {i}] Source: {title} (Path: {source}, Relevance: {score}) ---\n{text}"
+                )
+
+            context_str = "\n\n".join(context_blocks)
+
+            default_system_prompt = (
+                "You are a helpful, accurate, and privacy-preserving AI assistant. "
+                "If the user greets you or includes conversational pleasantries, greet them warmly. "
+                "Answer the user's question thoroughly using the provided context retrieved from their private vector database. "
+                "If the question cannot be answered from the provided context, state that clearly without guessing. "
+                "Cite your sources using the document numbers or document names provided in the context."
+            )
+            user_content = (
+                f"Context from private vector database:\n\n{context_str}\n\n"
+                f"User Question: {question}\n\n"
+                f"Please provide a thorough, well-structured answer based strictly on the context above."
+            )
+        else:
+            default_system_prompt = (
+                "You are a helpful, friendly, and privacy-preserving AI assistant for Agent with RAG. "
+                "The user is greeting you or asking a conversational question. "
+                "Respond warmly, introduce yourself as the Agent with RAG Assistant, and inform them that you can answer questions grounded in their private vector database or run tools. Keep your answer friendly and concise."
+            )
+            user_content = question
+
+        sys_prompt = system_instruction or default_system_prompt
+
+        full_prompt = f"{sys_prompt}\n\n{user_content}"
+        request_payload = {
+            "model": "Llama-3.2-3B-Instruct",
+            "prompt": full_prompt,
+            "system": sys_prompt,
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_content}
+            ],
+            "target": "model",
+            "port": 8000,
+            "temperature": 0.2,
+            "max_tokens": 2048
+        }
+
+        call_args = {
+            "endpoint": endpoint,
+            "system_instruction": sys_prompt,
+            "question": question,
+            "retrieved_chunks_count": len(retrieved_chunks),
+            "sources": [c.get("metadata", {}).get("source") for c in retrieved_chunks],
+            "prompt_length_chars": len(full_prompt)
+        }
+
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer your-internal-secure-gateway-token-xyz"
+            }
+            resp = requests.post(
+                endpoint,
+                json=request_payload,
+                headers=headers,
+                timeout=120
+            )
+            duration_ms = (time.time() - start_time) * 1000
+
+            if resp.status_code == 200:
+                try:
+                    resp_json = resp.json()
+                except Exception:
+                    resp_json = {}
+
+                answer_text = ""
+                if isinstance(resp_json, dict):
+                    answer_text = (
+                        resp_json.get("reply") or
+                        resp_json.get("response") or
+                        resp_json.get("answer") or
+                        resp_json.get("text") or
+                        ""
+                    )
+                    if not answer_text and "choices" in resp_json and len(resp_json["choices"]) > 0:
+                        choice = resp_json["choices"][0]
+                        if isinstance(choice, dict):
+                            msg = choice.get("message", {})
+                            if isinstance(msg, dict):
+                                answer_text = msg.get("content", "")
+                            elif isinstance(choice.get("text"), str):
+                                answer_text = choice.get("text", "")
+
+                if not answer_text:
+                    answer_text = resp.text
+
+                log_entry = log_call(
+                    call_type="custom_model_api",
+                    arguments=call_args,
+                    response={
+                        "status": "success",
+                        "endpoint": endpoint,
+                        "status_code": resp.status_code,
+                        "answer_chars": len(answer_text),
+                        "answer_preview": answer_text[:200] + "..." if len(answer_text) > 200 else answer_text
+                    },
+                    duration_ms=duration_ms,
+                    status="success",
+                    conversation_id=conversation_id,
+                    invoker="Agent",
+                    target=f"Custom Private LLM ({endpoint})",
+                    short_description=f"Prompted custom LLM at {endpoint}"
+                )
+
+                llm_component = {
+                    "name": "LLM",
+                    "role": "Private Model Server",
+                    "icon": "⚡",
+                    "status": "success",
+                    "duration_ms": round(duration_ms, 2),
+                    "description": f"Generated grounded response using custom private LLM at {endpoint}",
+                    "request": {
+                        "endpoint": endpoint,
+                        "method": "POST",
+                        "system_instruction": sys_prompt,
+                        "question": question,
+                        "prompt_length_chars": len(full_prompt),
+                        "context_chunks_count": len(retrieved_chunks)
+                    },
+                    "response": {
+                        "endpoint": endpoint,
+                        "status_code": resp.status_code,
+                        "answer": answer_text,
+                        "duration_ms": round(duration_ms, 2)
+                    }
+                }
+
+                return {
+                    "answer": answer_text,
+                    "model": f"Custom API ({endpoint})",
+                    "sources": retrieved_chunks,
+                    "log_id": log_entry.get("id"),
+                    "duration_ms": round(duration_ms, 2),
+                    "component": llm_component
+                }
+            else:
+                err_msg = f"Custom model API returned HTTP {resp.status_code}: {resp.text}"
+                log_call(
+                    call_type="custom_model_api",
+                    arguments=call_args,
+                    response={"error": err_msg, "status_code": resp.status_code},
+                    duration_ms=duration_ms,
+                    status="error",
+                    conversation_id=conversation_id,
+                    invoker="Agent",
+                    target=f"Custom Private LLM ({endpoint})",
+                    short_description=f"Error from custom LLM {endpoint}: HTTP {resp.status_code}"
+                )
+                raise RuntimeError(err_msg)
+
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            log_call(
+                call_type="custom_model_api",
+                arguments=call_args,
+                response={"error": str(e)},
+                duration_ms=duration_ms,
+                status="error",
+                conversation_id=conversation_id,
+                invoker="Agent",
+                target=f"Custom Private LLM ({endpoint})",
+                short_description=f"Failed to query custom LLM at {endpoint}: {str(e)}"
+            )
+            raise
+
     def answer_question(
         self,
         question: str,
         retrieved_chunks: List[Dict[str, Any]],
         model: Optional[str] = None,
         system_instruction: Optional[str] = None,
-        conversation_id: Optional[str] = None
+        conversation_id: Optional[str] = None,
+        custom_endpoint: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Generate an answer using Google AI Studio Gemma/Gemini model, grounded strictly
-        on retrieved document chunks from the private vector database.
+        Generate an answer using Google AI Studio Gemma/Gemini model, or custom model endpoint,
+        grounded strictly on retrieved document chunks from the private vector database.
         """
+        if model == "custom_model_api" or (model and "custom" in model.lower()) or custom_endpoint:
+            endpoint = custom_endpoint or "http://127.0.0.1:8000/api/chat"
+            return self.query_custom_llm(
+                endpoint=endpoint,
+                question=question,
+                retrieved_chunks=retrieved_chunks,
+                system_instruction=system_instruction,
+                conversation_id=conversation_id
+            )
+
         start_time = time.time()
         model_name = model or self.get_best_gemma_model()
 
         # Build context from chunks
-        context_blocks = []
-        for i, chunk in enumerate(retrieved_chunks, 1):
-            source = chunk.get("metadata", {}).get("source", "Unknown Source")
-            title = chunk.get("metadata", {}).get("title", source)
-            score = chunk.get("score", 0.0)
-            text = chunk.get("content", "")
-            context_blocks.append(
-                f"--- [Document {i}] Source: {title} (Path: {source}, Relevance: {score}) ---\n{text}"
+        if retrieved_chunks:
+            context_blocks = []
+            for i, chunk in enumerate(retrieved_chunks, 1):
+                source = chunk.get("metadata", {}).get("source", "Unknown Source")
+                title = chunk.get("metadata", {}).get("title", source)
+                score = chunk.get("score", 0.0)
+                text = chunk.get("content", "")
+                context_blocks.append(
+                    f"--- [Document {i}] Source: {title} (Path: {source}, Relevance: {score}) ---\n{text}"
+                )
+
+            context_str = "\n\n".join(context_blocks)
+
+            default_system_prompt = (
+                "You are a helpful, accurate, and privacy-preserving AI assistant. "
+                "If the user greets you or includes conversational pleasantries, greet them warmly. "
+                "Answer the user's question thoroughly using the provided context retrieved from their private vector database. "
+                "If the question cannot be answered from the provided context, state that clearly without guessing. "
+                "Cite your sources using the document numbers or document names provided in the context."
             )
-
-        context_str = "\n\n".join(context_blocks)
-
-        default_system_prompt = (
-            "You are a helpful, accurate, and privacy-preserving AI assistant. "
-            "Your task is to answer the user's question using ONLY the provided context retrieved from their private vector database. "
-            "If the answer cannot be determined from the context, state that clearly without guessing. "
-            "Cite your sources using the document numbers or document names provided in the context."
-        )
-
-        user_content = (
-            f"Context from private vector database:\n\n{context_str}\n\n"
-            f"User Question: {question}\n\n"
-            f"Please provide a thorough, well-structured answer based strictly on the context above."
-        )
+            user_content = (
+                f"Context from private vector database:\n\n{context_str}\n\n"
+                f"User Question: {question}\n\n"
+                f"Please provide a thorough, well-structured answer based strictly on the context above."
+            )
+        else:
+            default_system_prompt = (
+                "You are a helpful, friendly, and privacy-preserving AI assistant for Agent with RAG. "
+                "The user is greeting you or asking a conversational question. "
+                "Respond warmly, introduce yourself as the Agent with RAG Assistant, and inform them that you can answer questions grounded in their private vector database or run tools. Keep your answer friendly and concise."
+            )
+            user_content = question
 
         call_args = {
             "model": model_name,

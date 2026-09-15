@@ -74,7 +74,7 @@ def auto_index_skills_into_db() -> Dict[str, Any]:
 
         # Check existing sources in DB to avoid unnecessary re-indexing if unchanged
         stats = vector_store.get_stats()
-        existing_sources = set(stats.get("distinct_sources", []))
+        existing_sources = set(stats.get("sources_list", []) or stats.get("distinct_sources", []))
         new_docs = [d for d in docs if d.metadata.get("source") not in existing_sources]
 
         if not new_docs:
