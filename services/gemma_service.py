@@ -180,9 +180,8 @@ class GemmaService:
             )
         else:
             default_system_prompt = (
-                "You are a helpful, friendly, and privacy-preserving AI assistant for Agent with RAG. "
-                "The user is greeting you or asking a conversational question. "
-                "Respond warmly, introduce yourself as the Agent with RAG Assistant, and inform them that you can answer questions grounded in their private vector database or run tools. Keep your answer friendly and concise."
+                "You are a helpful, knowledgeable, and accurate AI assistant for Agent with RAG. "
+                "Answer the user's question clearly, thoroughly, and accurately to the best of your knowledge."
             )
             user_content = question
 
@@ -385,9 +384,8 @@ class GemmaService:
             )
         else:
             default_system_prompt = (
-                "You are a helpful, friendly, and privacy-preserving AI assistant for Agent with RAG. "
-                "The user is greeting you or asking a conversational question. "
-                "Respond warmly, introduce yourself as the Agent with RAG Assistant, and inform them that you can answer questions grounded in their private vector database or run tools. Keep your answer friendly and concise."
+                "You are a helpful, knowledgeable, and accurate AI assistant for Agent with RAG. "
+                "Answer the user's question clearly, thoroughly, and accurately to the best of your knowledge."
             )
             user_content = question
 

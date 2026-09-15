@@ -70,7 +70,8 @@ body {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
-    max-width: 1440px;
+    width: 100%;
+    max-width: 100%;
     margin: 0 auto;
     padding: 0 24px 40px;
 }
@@ -746,10 +747,13 @@ body {
    ========================================================================== */
 
 .content-grid.chat-layout {
-    grid-template-columns: 1.3fr 1fr;
+    display: grid;
+    grid-template-columns: calc(50% - 12px) calc(50% - 12px);
+    gap: 24px;
+    width: 100%;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 768px) {
     .content-grid.chat-layout {
         grid-template-columns: 1fr;
     }
@@ -759,6 +763,17 @@ body {
     display: flex;
     flex-direction: column;
     min-height: 580px;
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.context-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .qa-feed {

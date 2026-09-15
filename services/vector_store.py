@@ -90,10 +90,11 @@ class VectorStoreService:
             "status": "success"
         }
 
-    def query(self, query_text: str, top_k: int = 4, min_score: float = 0.25) -> List[Dict[str, Any]]:
+    def query(self, query_text: str, top_k: int = 4, min_score: float = 0.30) -> List[Dict[str, Any]]:
         """
         Retrieve the top-k most semantically relevant document chunks for a query text.
-        Filters out low-confidence chunks where similarity score < min_score (default: 0.25 / 25%).
+        Filters out low-confidence chunks where similarity score < min_score (default: 0.30 / 30%).
+        If the query score from VectorStoreService is below 30%, the chunk text is not added to the list.
         """
         count = self.collection.count()
         if count == 0:

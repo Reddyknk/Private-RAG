@@ -36,9 +36,9 @@ from services.skill_runner import (
 # Ensure embedder configuration exists in services/
 init_embedder_config()
 
-# Minimum relevance similarity score threshold for vector database chunks (0.25 = 25%)
-# Chunks below this threshold (e.g. 14.5%) are filtered out as irrelevant noise.
-MIN_RELEVANCE_SCORE = 0.25
+# Minimum relevance similarity score threshold for vector database chunks (0.30 = 30%)
+# If the query score from VectorStoreService is below 30%, the text chunk is not added to the list.
+MIN_RELEVANCE_SCORE = 0.30
 
 CONVERSATIONAL_GREETINGS = {
     "hello", "hi", "hey", "howdy", "greetings", "hola", "bonjour",
@@ -290,6 +290,15 @@ def query_rag():
             status="success"
         )
 
+        # Create an entry in database/conversations.json immediately when prompt is received
+        log_conversation(
+            conversation_id=conversation_id,
+            user_query=question,
+            agent_response="[Processing...]",
+            timestamp=agent_req_payload["timestamp"],
+            duration_ms=0.0
+        )
+
         # 2. Embedder Component: Local Ollama Embedding
         current_embed_model = get_current_embedder_model()
         emb_start = time.time()
@@ -367,7 +376,7 @@ def query_rag():
         vs_desc = (
             f"Retrieved {len(retrieved_chunks)} relevant chunk(s) from private vector storage (score ≥ {int(MIN_RELEVANCE_SCORE*100)}%)"
             if retrieved_chunks else
-            f"Searched private vector storage (no chunks met the {int(MIN_RELEVANCE_SCORE*100)}% minimum relevance threshold)"
+            f"Searched private vector storage (no chunks met the {int(MIN_RELEVANCE_SCORE*100)}% minimum relevance threshold; prompt sent directly to model)"
         )
 
         log_event(
@@ -410,56 +419,6 @@ def query_rag():
         if is_greeting:
             retrieved_chunks = []
 
-        if not retrieved_chunks and not is_greeting:
-            answer = (
-                f"I searched your private vector database, but could not find any documents relevant to your query "
-                f"(all matches were below the {int(MIN_RELEVANCE_SCORE*100)}% relevance threshold). Please ensure relevant documents have been "
-                "ingested in the 'Vector DB Ingestion' tab, or ask a question related to your indexed knowledge base."
-            )
-            total_duration_ms = (time.time() - query_start_time) * 1000
-
-            agent_resp_payload = {
-                "answer": answer,
-                "total_duration_ms": round(total_duration_ms, 2)
-            }
-            log_event(
-                event_type="Agent Response",
-                invoker="Agent",
-                target="User",
-                short_description="No documents or skills matched query",
-                payload={"request": agent_req_payload, "response": agent_resp_payload},
-                conversation_id=conversation_id,
-                duration_ms=total_duration_ms,
-                status="success"
-            )
-
-            log_conversation(
-                conversation_id=conversation_id,
-                user_query=question,
-                agent_response=answer,
-                duration_ms=total_duration_ms
-            )
-
-            agent_component = {
-                "name": "Agent",
-                "role": "Orchestrator",
-                "icon": "🤖",
-                "status": "success",
-                "duration_ms": round(total_duration_ms, 2),
-                "description": "Agent coordinated query parsing and vector database search",
-                "request": agent_req_payload,
-                "response": agent_resp_payload
-            }
-
-            return jsonify({
-                "conversation_id": conversation_id,
-                "answer": answer,
-                "sources": [],
-                "model": "none",
-                "duration_ms": round(total_duration_ms, 2),
-                "components": [agent_component, embedder_component, vector_store_component]
-            })
-
         # 5. LLM Component: Call Google AI Studio model or custom endpoint from backend Python code
         custom_system_prompt = None
         if is_greeting:
@@ -469,6 +428,13 @@ def query_rag():
                 "Respond warmly and courteously to their greeting, introduce yourself as the Agent with RAG Assistant, "
                 "and briefly let them know that you can answer questions grounded in their private vector database documents "
                 "or execute tools (such as live stock momentum and weather). Keep your response welcoming, clear, and concise."
+            )
+        elif not retrieved_chunks:
+            # Score was below 0.25 (or no documents matched): send prompt to model without info from vector store
+            custom_system_prompt = (
+                "You are a helpful, knowledgeable, and accurate AI assistant for Agent with RAG. "
+                "No documents from the private vector database matched this question with sufficient relevance. "
+                "Answer the user's question clearly, thoroughly, and accurately to the best of your knowledge."
             )
 
         response = gemma_service.answer_question(
@@ -554,6 +520,12 @@ def query_rag():
             conversation_id=conversation_id,
             duration_ms=total_duration_ms,
             status="error"
+        )
+        log_conversation(
+            conversation_id=conversation_id,
+            user_query=question,
+            agent_response=f"[Error: {str(e)}]",
+            duration_ms=total_duration_ms
         )
         return jsonify({"error": str(e)}), 500
 
@@ -750,6 +722,8 @@ def shutdown_app():
     def _delayed_exit():
         time.sleep(0.5)
         shutdown_ollama_if_started_by_app()
+        if app.testing or app.config.get("TESTING"):
+            return
         try:
             os.kill(os.getpid(), signal.SIGTERM)
         except Exception as kill_err:

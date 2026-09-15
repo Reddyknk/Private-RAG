@@ -15,6 +15,8 @@ from app import app
 class TestPrivateRAG(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        app.config["TESTING"] = True
+        app.testing = True
         cls.client = app.test_client()
 
     def test_01_ollama_health_and_embedding(self):
@@ -342,6 +344,56 @@ class TestPrivateRAG(unittest.TestCase):
             shut_data = shut_res.get_json()
             self.assertEqual(shut_data["status"], "success")
             self.assertIn("shutting down", shut_data["message"].lower())
+
+    def test_11_low_similarity_sends_prompt_to_model_without_vector_context(self):
+        """Verify that when vector store similarity is below 0.25, the prompt is sent to the model without vector store info."""
+        res = self.client.post("/api/query", json={"question": "What is the capital of France?", "top_k": 4})
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(len(data.get("sources", [])), 0, "No sources should be attached when score is below 0.25")
+
+        answer_lower = data.get("answer", "").lower()
+        self.assertIn("paris", answer_lower, f"Expected model to answer 'Paris', got: {data.get('answer')}")
+
+        # Check components: Vector Store had 0 chunks, LLM was called with 0 context chunks
+        components = data.get("components", [])
+        vs_comp = next((c for c in components if c["name"] == "Vector Store"), None)
+        llm_comp = next((c for c in components if c["name"] == "LLM"), None)
+
+        self.assertIsNotNone(vs_comp)
+        self.assertEqual(vs_comp["response"]["retrieved_count"], 0)
+        self.assertIsNotNone(llm_comp)
+        self.assertEqual(llm_comp["status"], "success")
+        self.assertEqual(llm_comp["request"]["context_chunks_count"], 0)
+
+    def test_12_cutoff_and_conversations_prompt_entry(self):
+        """Verify 30% score cutoff in vector store and immediate entry creation in conversations.json upon prompt receipt."""
+        from services.logger_service import flush_logs, CONVERSATIONS_FILE
+
+        # 1. Test 30% vector store cutoff
+        low_matches = vector_store.query("hello good morning how are you", top_k=4)
+        for m in low_matches:
+            self.assertGreaterEqual(m["score"], 0.30, f"Found match below 30% threshold: {m['score']}")
+
+        # 2. Test prompt received conversation logging
+        test_conv_id = f"conv-test12-{int(os.getpid())}"
+        test_query = "What is the capital of Japan?"
+        res = self.client.post("/api/query", json={
+            "question": test_query,
+            "conversation_id": test_conv_id,
+            "top_k": 2
+        })
+        self.assertEqual(res.status_code, 200)
+
+        flush_logs()
+        with open(CONVERSATIONS_FILE, "r") as f:
+            conversations = json.load(f)
+
+        record = next((c for c in conversations if c["conversation_id"] == test_conv_id), None)
+        self.assertIsNotNone(record, f"Conversation {test_conv_id} was not recorded in conversations.json")
+        self.assertEqual(record["user_query"], test_query)
+        self.assertNotEqual(record["agent_response"], "[Processing...]")
 
 
 if __name__ == "__main__":
