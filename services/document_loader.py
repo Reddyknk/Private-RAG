@@ -19,6 +19,35 @@ class Document:
         return f"<Document source={self.metadata.get('source')} length={len(self.content)}>"
 
 
+def extract_skill_metadata(text: str, default_name: str = "skill") -> tuple[str, str]:
+    """
+    Extracts name and description from a SKILL.md file.
+    Supports YAML frontmatter delimited by '---' as well as markdown headers.
+    """
+    name = ""
+    description = ""
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            for line in parts[1].splitlines():
+                stripped = line.strip()
+                if stripped.startswith("name:"):
+                    name = stripped.replace("name:", "", 1).strip()
+                elif stripped.startswith("description:"):
+                    description = stripped.replace("description:", "", 1).strip()
+
+    if not name or not description:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not name and stripped.startswith("# "):
+                name = stripped.replace("# ", "", 1).strip()
+            elif not description and stripped.lower().startswith("description:"):
+                description = stripped.split(":", 1)[1].strip()
+
+    name = name or default_name
+    return name, description
+
+
 def split_text_into_chunks(text: str, chunk_size: int = 800, chunk_overlap: int = 120) -> List[str]:
     """
     Split a body of text into overlapping chunks respecting sentence/paragraph boundaries where possible.
@@ -207,20 +236,41 @@ def load_from_directory(
             if not file_text.strip():
                 continue
 
-            chunks = split_text_into_chunks(file_text, chunk_size, chunk_overlap)
-            for i, chunk in enumerate(chunks):
+            is_skill_md = file_path.name.lower() == "skill.md"
+            if is_skill_md:
+                # When adding SKILL.md to the vector store: The chunk is the whole file!
+                skill_name, skill_desc = extract_skill_metadata(file_text, default_name=file_path.parent.name)
                 documents.append(Document(
-                    content=chunk,
+                    content=file_text,
                     metadata={
                         "source": str(file_path),
                         "relative_path": str(file_path.relative_to(resolved_path)),
-                        "source_type": "directory",
-                        "title": doc_title,
+                        "source_type": "skill",
+                        "title": f"Skill: {skill_name}",
+                        "filename": file_path.name,
                         "file_extension": file_path.suffix.lower(),
-                        "chunk_index": i,
-                        "total_chunks": len(chunks)
+                        "chunk_index": 0,
+                        "total_chunks": 1,
+                        "is_skill_md": True,
+                        "skill_name": skill_name,
+                        "skill_description": skill_desc
                     }
                 ))
+            else:
+                chunks = split_text_into_chunks(file_text, chunk_size, chunk_overlap)
+                for i, chunk in enumerate(chunks):
+                    documents.append(Document(
+                        content=chunk,
+                        metadata={
+                            "source": str(file_path),
+                            "relative_path": str(file_path.relative_to(resolved_path)),
+                            "source_type": "directory",
+                            "title": doc_title,
+                            "file_extension": file_path.suffix.lower(),
+                            "chunk_index": i,
+                            "total_chunks": len(chunks)
+                        }
+                    ))
         except Exception as e:
             print(f"[DocumentLoader] Skipping {file_path} due to error: {e}")
 

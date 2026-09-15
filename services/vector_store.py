@@ -1,11 +1,12 @@
 import os
 import shutil
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 import chromadb
 from chromadb.config import Settings
 
 from config import CHROMA_PERSIST_DIR, DATABASE_DIR
-from services.document_loader import Document
+from services.document_loader import Document, extract_skill_metadata
 from services.ollama_embedder import OllamaEmbeddingFunction
 
 COLLECTION_NAME = "private_rag_collection"
@@ -45,6 +46,10 @@ class VectorStoreService:
     def add_documents(self, documents: List[Document], batch_size: int = 20) -> Dict[str, Any]:
         """
         Embed and persist document chunks into the private vector database.
+        When adding SKILL.md:
+        - Only creates the vectors using the name and description in the file.
+        - The chunk is the whole file.
+        - During retrieval, provides all the text in the file.
         """
         if not documents:
             return {"added_chunks": 0, "status": "no_documents"}
@@ -52,6 +57,7 @@ class VectorStoreService:
         total_chunks = len(documents)
         ids = []
         texts = []
+        texts_to_embed = []
         metadatas = []
 
         # Generate unique ids based on source & chunk index
@@ -61,6 +67,27 @@ class VectorStoreService:
             doc_id = f"{abs(hash(source))}_{chunk_idx}_{total_chunks}"
             ids.append(doc_id)
             texts.append(doc.content)
+
+            is_skill_md = (
+                doc.metadata.get("is_skill_md")
+                or doc.metadata.get("filename", "").lower() == "skill.md"
+                or Path(str(source)).name.lower() == "skill.md"
+            )
+
+            if is_skill_md:
+                name = doc.metadata.get("skill_name")
+                desc = doc.metadata.get("skill_description")
+                if not name or not desc:
+                    extracted_name, extracted_desc = extract_skill_metadata(doc.content, default_name=Path(str(source)).parent.name)
+                    name = name or extracted_name
+                    desc = desc or extracted_desc
+
+                # Only create the vectors using the name and description in the file
+                embed_text = f"name: {name}\ndescription: {desc}".strip() if (name or desc) else doc.content
+                texts_to_embed.append(embed_text)
+            else:
+                texts_to_embed.append(doc.content)
+
             # Ensure metadata values are str/int/float/bool
             clean_meta = {}
             for k, v in doc.metadata.items():
@@ -68,17 +95,28 @@ class VectorStoreService:
                     clean_meta[k] = v
                 else:
                     clean_meta[k] = str(v)
+            if is_skill_md:
+                clean_meta["is_skill_md"] = True
+                if name:
+                    clean_meta["skill_name"] = name
+                if desc:
+                    clean_meta["skill_description"] = desc
             metadatas.append(clean_meta)
 
-        # Batch insert to avoid overloading embedding endpoint
+        # Batch insert with custom embeddings
         for i in range(0, total_chunks, batch_size):
             batch_ids = ids[i:i + batch_size]
             batch_texts = texts[i:i + batch_size]
+            batch_texts_to_embed = texts_to_embed[i:i + batch_size]
             batch_metadatas = metadatas[i:i + batch_size]
+
+            # Generate vector embeddings using Ollama: for SKILL.md this uses only name and description
+            batch_embeddings = self.embedder.embed_documents(batch_texts_to_embed)
 
             self.collection.upsert(
                 ids=batch_ids,
                 documents=batch_texts,
+                embeddings=batch_embeddings,
                 metadatas=batch_metadatas
             )
 
@@ -90,11 +128,17 @@ class VectorStoreService:
             "status": "success"
         }
 
-    def query(self, query_text: str, top_k: int = 4, min_score: float = 0.30) -> List[Dict[str, Any]]:
+    def query(
+        self,
+        query_text: str,
+        top_k: int = 4,
+        min_score: float = 0.30,
+        min_skill_score: float = 0.50
+    ) -> List[Dict[str, Any]]:
         """
         Retrieve the top-k most semantically relevant document chunks for a query text.
-        Filters out low-confidence chunks where similarity score < min_score (default: 0.30 / 30%).
-        If the query score from VectorStoreService is below 30%, the chunk text is not added to the list.
+        Filters out low-confidence document chunks where similarity score < min_score (default: 0.30 / 30%).
+        For skill vector query, only use skill chunks with score higher than 50% (similarity score > min_skill_score, default: 0.50).
         """
         count = self.collection.count()
         if count == 0:
@@ -117,13 +161,34 @@ class VectorStoreService:
                 distance = distances[i] if i < len(distances) else 0.0
                 # Cosine similarity is 1 - cosine distance
                 similarity_score = max(0.0, 1.0 - distance)
-                if similarity_score >= min_score:
-                    matched_items.append({
-                        "content": docs[i],
-                        "metadata": metas[i] if i < len(metas) else {},
-                        "distance": round(distance, 4),
-                        "score": round(similarity_score, 4)
-                    })
+                meta = metas[i] if i < len(metas) else {}
+
+                is_skill_chunk = (
+                    meta.get("is_skill_md") is True
+                    or meta.get("source_type") == "skill"
+                    or Path(str(meta.get("source", ""))).name.lower() == "skill.md"
+                    or meta.get("filename", "").lower() == "skill.md"
+                )
+
+                # For skill vector query only use skill chunks with score higher than 50% (> 0.50)
+                if is_skill_chunk:
+                    if similarity_score > min_skill_score:
+                        matched_items.append({
+                            "content": docs[i],
+                            "metadata": meta,
+                            "distance": round(distance, 4),
+                            "score": round(similarity_score, 4),
+                            "is_skill": True
+                        })
+                else:
+                    if similarity_score >= min_score:
+                        matched_items.append({
+                            "content": docs[i],
+                            "metadata": meta,
+                            "distance": round(distance, 4),
+                            "score": round(similarity_score, 4),
+                            "is_skill": False
+                        })
 
         return matched_items
 

@@ -395,6 +395,61 @@ class TestPrivateRAG(unittest.TestCase):
         self.assertEqual(record["user_query"], test_query)
         self.assertNotEqual(record["agent_response"], "[Processing...]")
 
+    def test_13_skill_md_whole_file_chunk_and_name_desc_vectors(self):
+        """Verify SKILL.md is stored as a whole file chunk, embedded by name/desc, and returns full text during retrieval."""
+        from services.skill_runner import auto_index_skills_into_db, SKILLS_DIR
+
+        # Index skills
+        res = auto_index_skills_into_db()
+        self.assertIn(res.get("status"), ["indexed", "up_to_date"])
+
+        # Check ChromaDB entries for SKILL.md
+        col = vector_store.collection
+        for skill_folder in SKILLS_DIR.iterdir():
+            if not skill_folder.is_dir():
+                continue
+            skill_md = skill_folder / "SKILL.md"
+            stored = col.get(where={"source": str(skill_md)})
+            self.assertEqual(len(stored["ids"]), 1, f"Expected exactly 1 chunk for {skill_md}")
+            doc_content = stored["documents"][0]
+            full_file_text = skill_md.read_text(encoding="utf-8")
+            self.assertEqual(doc_content, full_file_text, "Stored chunk must be the entire file content")
+            meta = stored["metadatas"][0]
+            self.assertTrue(meta.get("is_skill_md"))
+            self.assertEqual(meta.get("chunk_index"), 0)
+            self.assertEqual(meta.get("total_chunks"), 1)
+
+        # Verify retrieval provides all text in the file
+        matches = vector_store.query("Which stocks have the lowest percentage decrease?", top_k=2)
+        self.assertGreater(len(matches), 0)
+        stock_skill = next((m for m in matches if "stock-market-skill" in m["metadata"].get("source", "")), None)
+        self.assertIsNotNone(stock_skill, "Stock skill should match equity decrease query")
+        expected_stock_file = (SKILLS_DIR / "stock-market-skill" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertEqual(stock_skill["content"], expected_stock_file, "Retrieval must provide all text in the file")
+
+    def test_14_skill_chunks_require_higher_than_50_percent_score(self):
+        """Verify that skill vector queries only use skill chunks with score strictly higher than 50% (> 0.50)."""
+        # Query where stock skill matches with high confidence (> 50%)
+        matches = vector_store.query(
+            "Which stocks have the highest percentage increase?",
+            top_k=4,
+            min_score=0.30,
+            min_skill_score=0.50
+        )
+        for m in matches:
+            if m.get("is_skill"):
+                self.assertGreater(m["score"], 0.50, f"Skill chunk score {m['score']} must be > 0.50")
+
+        # When min_skill_score is set to an unreachable value (0.99), skill chunks are excluded
+        strict_matches = vector_store.query(
+            "Which stocks have the highest percentage increase?",
+            top_k=4,
+            min_score=0.30,
+            min_skill_score=0.99
+        )
+        for m in strict_matches:
+            self.assertFalse(m.get("is_skill"), f"Skill chunk with score {m['score']} should not pass 0.99 threshold")
+
 
 if __name__ == "__main__":
     unittest.main()

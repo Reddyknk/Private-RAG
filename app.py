@@ -39,6 +39,8 @@ init_embedder_config()
 # Minimum relevance similarity score threshold for vector database chunks (0.30 = 30%)
 # If the query score from VectorStoreService is below 30%, the text chunk is not added to the list.
 MIN_RELEVANCE_SCORE = 0.30
+# For skill vector queries, only use skill chunks with score higher than 50% (0.50)
+MIN_SKILL_RELEVANCE_SCORE = 0.50
 
 CONVERSATIONAL_GREETINGS = {
     "hello", "hi", "hey", "howdy", "greetings", "hola", "bonjour",
@@ -348,25 +350,33 @@ def query_rag():
             "response": embedder_resp
         }
 
-        # 3. Vector Store Component: Semantic search in ChromaDB (filtered by MIN_RELEVANCE_SCORE)
+        # 3. Vector Store Component: Semantic search in ChromaDB (docs >= 30%, skill chunks > 50%)
         vs_start = time.time()
-        retrieved_chunks = vector_store.query(question, top_k=top_k, min_score=MIN_RELEVANCE_SCORE)
+        retrieved_chunks = vector_store.query(
+            question,
+            top_k=top_k,
+            min_score=MIN_RELEVANCE_SCORE,
+            min_skill_score=MIN_SKILL_RELEVANCE_SCORE
+        )
         vs_duration_ms = (time.time() - vs_start) * 1000
 
         vs_req = {
             "query": question,
             "top_k": top_k,
             "min_score_threshold": MIN_RELEVANCE_SCORE,
+            "min_skill_score_threshold": MIN_SKILL_RELEVANCE_SCORE,
             "collection": "private_docs"
         }
         vs_resp = {
             "retrieved_count": len(retrieved_chunks),
             "min_score_threshold": MIN_RELEVANCE_SCORE,
+            "min_skill_score_threshold": MIN_SKILL_RELEVANCE_SCORE,
             "sources": [
                 {
                     "source": c.get("metadata", {}).get("source"),
                     "title": c.get("metadata", {}).get("title"),
                     "score": round(float(c.get("score", 0.0)), 3),
+                    "is_skill": c.get("is_skill", False),
                     "preview": (c.get("content", "")[:120] + "...") if len(c.get("content", "")) > 120 else c.get("content", "")
                 }
                 for c in retrieved_chunks
@@ -374,9 +384,9 @@ def query_rag():
         }
 
         vs_desc = (
-            f"Retrieved {len(retrieved_chunks)} relevant chunk(s) from private vector storage (score ≥ {int(MIN_RELEVANCE_SCORE*100)}%)"
+            f"Retrieved {len(retrieved_chunks)} relevant chunk(s) from private vector storage (docs ≥ {int(MIN_RELEVANCE_SCORE*100)}%, skills > {int(MIN_SKILL_RELEVANCE_SCORE*100)}%)"
             if retrieved_chunks else
-            f"Searched private vector storage (no chunks met the {int(MIN_RELEVANCE_SCORE*100)}% minimum relevance threshold; prompt sent directly to model)"
+            f"Searched private vector storage (no chunks met the relevance thresholds [docs ≥ {int(MIN_RELEVANCE_SCORE*100)}%, skills > {int(MIN_SKILL_RELEVANCE_SCORE*100)}%]; prompt sent directly to model)"
         )
 
         log_event(

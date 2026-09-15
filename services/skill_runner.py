@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from services.document_loader import load_from_directory, Document
+from services.document_loader import load_from_directory, Document, extract_skill_metadata
 from services.vector_store import vector_store
 from services.logger_service import log_event
 
@@ -61,34 +61,102 @@ def get_available_skills() -> List[Dict[str, Any]]:
 
 def auto_index_skills_into_db() -> Dict[str, Any]:
     """
-    Auto-discovers all skills in skills/ and embeds them into the vector database
+    Auto-discovers all skills in skills/ and embeds their SKILL.md into the vector database
     using Ollama embeddings as specified in SKILL_SPEC.md.
+    When adding SKILL.md to the vector store:
+    - Only create the vectors using the name and description in the file.
+    - The chunk is the whole file.
+    - During retrieval, provide all the text in the file.
     """
     if not SKILLS_DIR.exists():
         return {"status": "skipped", "message": "skills/ directory does not exist."}
 
     try:
-        docs = load_from_directory(str(SKILLS_DIR))
+        docs = []
+        for skill_folder in sorted(SKILLS_DIR.iterdir()):
+            if not skill_folder.is_dir():
+                continue
+            skill_md = skill_folder / "SKILL.md"
+            if not skill_md.exists():
+                continue
+
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = skill_md.read_text(encoding="latin-1", errors="ignore")
+
+            if not content.strip():
+                continue
+
+            name, desc = extract_skill_metadata(content, default_name=skill_folder.name)
+
+            docs.append(Document(
+                content=content,  # The chunk is the whole file!
+                metadata={
+                    "source": str(skill_md),
+                    "relative_path": str(skill_md.relative_to(SKILLS_DIR)),
+                    "source_type": "skill",
+                    "title": f"Skill: {name}",
+                    "filename": "SKILL.md",
+                    "file_extension": ".md",
+                    "chunk_index": 0,
+                    "total_chunks": 1,
+                    "is_skill_md": True,
+                    "skill_name": name,
+                    "skill_description": desc
+                }
+            ))
+
         if not docs:
             return {"status": "skipped", "message": "No skill files found to index."}
 
-        # Check existing sources in DB to avoid unnecessary re-indexing if unchanged
-        stats = vector_store.get_stats()
-        existing_sources = set(stats.get("sources_list", []) or stats.get("distinct_sources", []))
-        new_docs = [d for d in docs if d.metadata.get("source") not in existing_sources]
+        col = vector_store.collection
+        docs_to_index = []
+        for doc in docs:
+            src = doc.metadata.get("source")
+            existing = col.get(where={"source": src})
+            # If multiple chunks exist (legacy chunking) or not tagged as single whole file, delete and reindex
+            if existing and existing.get("ids"):
+                ids = existing["ids"]
+                metas = existing.get("metadatas") or []
+                is_proper_whole_chunk = (
+                    len(ids) == 1
+                    and metas
+                    and metas[0].get("is_skill_md")
+                    and metas[0].get("chunk_index") == 0
+                    and metas[0].get("total_chunks") == 1
+                )
+                if not is_proper_whole_chunk:
+                    col.delete(ids=ids)
+                    docs_to_index.append(doc)
+            else:
+                docs_to_index.append(doc)
 
-        if not new_docs:
+        # Purge any legacy non-SKILL.md artifacts (like data/registry.csv or scripts/*.py) under skills/
+        try:
+            sample = col.get(limit=min(col.count(), 1000), include=["metadatas"])
+            purge_ids = []
+            for cid, meta in zip(sample.get("ids", []), sample.get("metadatas", [])):
+                if meta and "source" in meta and str(SKILLS_DIR) in str(meta["source"]):
+                    if Path(meta["source"]).name.lower() != "skill.md":
+                        purge_ids.append(cid)
+            if purge_ids:
+                col.delete(ids=purge_ids)
+        except Exception:
+            pass
+
+        if not docs_to_index:
             return {
                 "status": "up_to_date",
-                "message": "All skills are already indexed in the vector database.",
-                "total_documents": stats.get("total_documents", 0)
+                "message": "All skills are already indexed as whole-file chunks in the vector database.",
+                "total_documents": col.count()
             }
 
-        result = vector_store.add_documents(new_docs)
+        result = vector_store.add_documents(docs_to_index)
         return {
             "status": "indexed",
-            "message": f"Successfully indexed {len(new_docs)} new skill chunks into vector database.",
-            "added_chunks": len(new_docs),
+            "message": f"Successfully indexed {len(docs_to_index)} skill(s) into vector database using name and description vectors.",
+            "added_chunks": len(docs_to_index),
             "total_documents": result.get("total_documents_in_db", 0)
         }
     except Exception as e:
