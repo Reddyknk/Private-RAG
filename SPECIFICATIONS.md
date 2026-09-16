@@ -1,4 +1,4 @@
-# Private RAG That Runs on Local Compute and Uses Gemma model hosted on Google AI Studio to Generate the Replies
+# Agent With RAG Capabilities
 ## Requirements
 1. Build a web app with three pages switchable by a tab or button at the top of the window.
 2. The first page takes a url or local directory, then create a private vector database from documents in the url or local directory and save it to database/ folder. Use local ollama to create the vector database.

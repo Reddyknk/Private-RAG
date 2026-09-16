@@ -213,16 +213,38 @@ async function loadStats() {
             document.getElementById("statTotalSources").textContent = data.vector_store.unique_sources || 0;
             document.getElementById("statDbSize").textContent = `${data.vector_store.db_size_mb || 0} MB`;
 
-            // Populate Sources List
+            // Populate Sources List with documents from Document Database
             const listElem = document.getElementById("indexedSourcesList");
-            const sources = data.vector_store.sources_list || [];
+            const sources = data.vector_store.sources_list || data.vector_store.sources || [];
+            const details = data.vector_store.source_details || [];
+            
             if (sources.length === 0) {
-                listElem.innerHTML = `<p class="text-muted" style="padding: 10px 0;">No documents indexed yet.</p>`;
+                listElem.innerHTML = `<p class="text-muted" style="padding: 10px 0;">No documents indexed yet in Document Database.</p>`;
+            } else if (details.length > 0) {
+                listElem.innerHTML = details.map(d => {
+                    const icon = d.is_url ? "🌐" : "📄";
+                    const shortName = d.name || d.source;
+                    const chunkLabel = d.chunk_count ? `${d.chunk_count} chunk${d.chunk_count > 1 ? 's' : ''}` : '';
+                    return `
+                    <div class="source-item" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; margin-bottom: 8px; background: rgba(255, 255, 255, 0.04); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);">
+                        <div style="display: flex; align-items: center; gap: 10px; overflow: hidden; flex: 1; margin-right: 8px;">
+                            <span style="font-size: 16px;">${icon}</span>
+                            <div style="display: flex; flex-direction: column; overflow: hidden;">
+                                <span class="source-title" style="font-weight: 600; font-size: 13px;" title="${escapeHtml(d.source)}">${escapeHtml(shortName)}</span>
+                                <span style="font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(d.source)}">${escapeHtml(d.source)}</span>
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+                            ${chunkLabel ? `<span class="badge" style="font-size: 11px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">${chunkLabel}</span>` : ''}
+                            <span class="badge badge-private">Docs DB</span>
+                        </div>
+                    </div>`;
+                }).join("");
             } else {
                 listElem.innerHTML = sources.map(s => `
                     <div class="source-item">
                         <span class="source-title" title="${escapeHtml(s)}">${escapeHtml(s)}</span>
-                        <span class="badge badge-private">Stored in DB</span>
+                        <span class="badge badge-private">Docs DB</span>
                     </div>
                 `).join("");
             }

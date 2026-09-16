@@ -20,7 +20,7 @@ from services.logger_service import (
 )
 from services.ollama_embedder import check_ollama_health, OllamaEmbeddingFunction
 from services.document_loader import load_from_url, load_from_directory
-from services.vector_store import vector_store
+from services.vector_store import doc_vector_store, skill_vector_store, vector_store
 from services.gemma_service import gemma_service
 from services.embedder_manager import (
     get_embedder_catalog,
@@ -30,7 +30,8 @@ from services.embedder_manager import (
 from services.skill_runner import (
     auto_index_skills_into_db,
     get_available_skills,
-    execute_skill_tools_if_relevant
+    execute_skill_tools_if_relevant,
+    run_agent_skill_pipeline
 )
 
 # Ensure embedder configuration exists in services/
@@ -234,8 +235,8 @@ def ingest_documents():
                 "added_chunks": 0
             }), 200
 
-        # Add to vector store in database/
-        result = vector_store.add_documents(documents)
+        # Add to document vector store in database/chroma_docs
+        result = doc_vector_store.add_documents(documents)
         return jsonify({
             "status": "success",
             "message": f"Successfully ingested {len(documents)} chunks from {path} into private vector database.",
@@ -301,177 +302,32 @@ def query_rag():
             duration_ms=0.0
         )
 
-        # 2. Embedder Component: Local Ollama Embedding
-        current_embed_model = get_current_embedder_model()
-        emb_start = time.time()
-        try:
-            ollama_embedder = OllamaEmbeddingFunction(model=current_embed_model)
-            query_embedding = ollama_embedder.embed_query(question)
-            emb_duration_ms = (time.time() - emb_start) * 1000
-            emb_dims = len(query_embedding) if isinstance(query_embedding, list) else 384
-            embedder_req = {
-                "model": current_embed_model,
-                "endpoint": f"{config.OLLAMA_BASE_URL}/api/embeddings",
-                "method": "POST",
-                "prompt": question
-            }
-            embedder_resp = {
-                "status_code": 200,
-                "dimensions": emb_dims,
-                "duration_ms": round(emb_duration_ms, 2)
-            }
-        except Exception as emb_err:
-            emb_duration_ms = (time.time() - emb_start) * 1000
-            embedder_req = {"model": current_embed_model, "prompt": question}
-            embedder_resp = {"error": str(emb_err)}
-
-        log_event(
-            event_type="Embedder",
-            invoker="Agent",
-            target=f"Local Ollama ({current_embed_model})",
-            short_description=f"Computed vector embedding via Ollama ({current_embed_model})",
-            payload={
-                "request": embedder_req,
-                "response": embedder_resp
-            },
-            conversation_id=conversation_id,
-            duration_ms=emb_duration_ms,
-            status="success" if "error" not in embedder_resp else "error"
-        )
-
-        embedder_component = {
-            "name": "Embedder",
-            "role": "Local Vectorizer",
-            "icon": "🧠",
-            "status": "success" if "error" not in embedder_resp else "error",
-            "duration_ms": round(emb_duration_ms, 2),
-            "description": f"Generated vector embedding using local Ollama model '{current_embed_model}'",
-            "request": embedder_req,
-            "response": embedder_resp
-        }
-
-        # 3. Vector Store Component: Semantic search in ChromaDB (docs >= 30%, skill chunks > 50%)
-        vs_start = time.time()
-        retrieved_chunks = vector_store.query(
-            question,
-            top_k=top_k,
-            min_score=MIN_RELEVANCE_SCORE,
-            min_skill_score=MIN_SKILL_RELEVANCE_SCORE
-        )
-        vs_duration_ms = (time.time() - vs_start) * 1000
-
-        vs_req = {
-            "query": question,
-            "top_k": top_k,
-            "min_score_threshold": MIN_RELEVANCE_SCORE,
-            "min_skill_score_threshold": MIN_SKILL_RELEVANCE_SCORE,
-            "collection": "private_docs"
-        }
-        vs_resp = {
-            "retrieved_count": len(retrieved_chunks),
-            "min_score_threshold": MIN_RELEVANCE_SCORE,
-            "min_skill_score_threshold": MIN_SKILL_RELEVANCE_SCORE,
-            "sources": [
-                {
-                    "source": c.get("metadata", {}).get("source"),
-                    "title": c.get("metadata", {}).get("title"),
-                    "score": round(float(c.get("score", 0.0)), 3),
-                    "is_skill": c.get("is_skill", False),
-                    "preview": (c.get("content", "")[:120] + "...") if len(c.get("content", "")) > 120 else c.get("content", "")
-                }
-                for c in retrieved_chunks
-            ]
-        }
-
-        vs_desc = (
-            f"Retrieved {len(retrieved_chunks)} relevant chunk(s) from private vector storage (docs ≥ {int(MIN_RELEVANCE_SCORE*100)}%, skills > {int(MIN_SKILL_RELEVANCE_SCORE*100)}%)"
-            if retrieved_chunks else
-            f"Searched private vector storage (no chunks met the relevance thresholds [docs ≥ {int(MIN_RELEVANCE_SCORE*100)}%, skills > {int(MIN_SKILL_RELEVANCE_SCORE*100)}%]; prompt sent directly to model)"
-        )
-
-        log_event(
-            event_type="Vector Store",
-            invoker="Agent",
-            target="ChromaDB (database/chroma_db)",
-            short_description=vs_desc,
-            payload={
-                "request": vs_req,
-                "response": vs_resp
-            },
-            conversation_id=conversation_id,
-            duration_ms=vs_duration_ms,
-            status="success"
-        )
-
-        vector_store_component = {
-            "name": "Vector Store",
-            "role": "ChromaDB Retriever",
-            "icon": "📁",
-            "status": "success",
-            "duration_ms": round(vs_duration_ms, 2),
-            "description": vs_desc,
-            "request": vs_req,
-            "response": vs_resp
-        }
-
-        # 4. Tools & External API Components: Check skills, execute tool scripts, and log external APIs
-        skill_exec = execute_skill_tools_if_relevant(question, retrieved_chunks, conversation_id=conversation_id)
-        live_tool_chunks = skill_exec.get("chunks", []) if isinstance(skill_exec, dict) else []
-        tool_components = skill_exec.get("components", []) if isinstance(skill_exec, dict) else []
-
-        if live_tool_chunks:
-            retrieved_chunks = live_tool_chunks + retrieved_chunks
-
-        # Check for conversational greeting or general introduction query
-        is_greeting = is_conversational_greeting(question)
-
-        # For conversational greetings, do not pass irrelevant document chunks
-        if is_greeting:
-            retrieved_chunks = []
-
-        # 5. LLM Component: Call Google AI Studio model or custom endpoint from backend Python code
-        custom_system_prompt = None
-        if is_greeting:
-            custom_system_prompt = (
-                "You are a helpful, friendly, and privacy-preserving AI assistant for Agent with RAG. "
-                "The user is greeting you or initiating a conversation. "
-                "Respond warmly and courteously to their greeting, introduce yourself as the Agent with RAG Assistant, "
-                "and briefly let them know that you can answer questions grounded in their private vector database documents "
-                "or execute tools (such as live stock momentum and weather). Keep your response welcoming, clear, and concise."
-            )
-        elif not retrieved_chunks:
-            # Score was below 0.25 (or no documents matched): send prompt to model without info from vector store
-            custom_system_prompt = (
-                "You are a helpful, knowledgeable, and accurate AI assistant for Agent with RAG. "
-                "No documents from the private vector database matched this question with sufficient relevance. "
-                "Answer the user's question clearly, thoroughly, and accurately to the best of your knowledge."
-            )
-
-        response = gemma_service.answer_question(
-            question,
-            retrieved_chunks,
+        # Run the full Agent Plan -> Execute -> Synthesize pipeline
+        pipeline_res = run_agent_skill_pipeline(
+            question=question,
             model=selected_model,
-            system_instruction=custom_system_prompt,
+            custom_endpoint=custom_endpoint,
             conversation_id=conversation_id,
-            custom_endpoint=custom_endpoint
+            top_k=top_k
         )
 
         total_duration_ms = (time.time() - query_start_time) * 1000
-        answer_text = response.get("answer", "")
-        llm_component = response.get("component")
+        answer_text = pipeline_res.get("answer", "")
+        sources = pipeline_res.get("sources", [])
+        components = pipeline_res.get("components", [])
 
-        # 6. Agent Component: Log final Agent Response to User
+        # Log Agent Response
         agent_resp_payload = {
             "answer": answer_text,
-            "model": response.get("model"),
-            "sources_count": len(response.get("sources", [])),
+            "model": pipeline_res.get("model"),
+            "sources_count": len(sources),
             "total_duration_ms": round(total_duration_ms, 2)
         }
         log_event(
             event_type="Agent Response",
             invoker="Agent",
             target="User",
-            short_description=f"Delivered grounded response ({round(total_duration_ms)}ms)",
+            short_description=f"Delivered response ({round(total_duration_ms)}ms)",
             payload={
                 "request": agent_req_payload,
                 "response": agent_resp_payload
@@ -481,41 +337,35 @@ def query_rag():
             status="success"
         )
 
+        # Finalize conversation record in database/conversations.json
+        log_conversation(
+            conversation_id=conversation_id,
+            user_query=question,
+            agent_response=answer_text,
+            timestamp=agent_req_payload["timestamp"],
+            duration_ms=round(total_duration_ms, 2)
+        )
+
         agent_component = {
             "name": "Agent",
             "role": "Orchestrator",
             "icon": "🤖",
             "status": "success",
             "duration_ms": round(total_duration_ms, 2),
-            "description": f"Agent dispatched query through vector search, tools, and grounded LLM synthesis ({round(total_duration_ms)}ms)",
+            "description": f"Agent dispatched query through skill reasoning, tool execution, and grounded synthesis ({round(total_duration_ms)}ms)",
             "request": agent_req_payload,
             "response": agent_resp_payload
         }
-
-        # 7. Record conversation in database/conversations.json
-        log_conversation(
-            conversation_id=conversation_id,
-            user_query=question,
-            agent_response=answer_text,
-            duration_ms=total_duration_ms
-        )
-
-        # Assemble full list of all components involved in generating this message
-        all_components = [agent_component, embedder_component, vector_store_component]
-        if tool_components:
-            all_components.extend(tool_components)
-        if llm_component:
-            all_components.append(llm_component)
+        all_components = [agent_component] + components
 
         return jsonify({
             "status": "success",
             "conversation_id": conversation_id,
             "question": question,
             "answer": answer_text,
-            "model": response.get("model"),
-            "sources": response.get("sources"),
+            "model": pipeline_res.get("model"),
+            "sources": sources,
             "duration_ms": round(total_duration_ms, 2),
-            "log_id": response.get("log_id"),
             "components": all_components
         })
 
@@ -746,6 +596,15 @@ def shutdown_app():
         "status": "success",
         "message": "Agent with RAG server is shutting down. The application has been disabled."
     })
+
+
+# Startup skill scanning and indexing into Skill Database
+try:
+    print("[Startup] Scanning skills/ folder and indexing into Skill Database...")
+    skill_idx_res = auto_index_skills_into_db()
+    print(f"[Startup] Skill Database initialized: {skill_idx_res}")
+except Exception as e:
+    print(f"[Startup] Warning during initial skill indexing: {e}")
 
 
 if __name__ == "__main__":

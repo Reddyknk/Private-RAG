@@ -1,6 +1,6 @@
 ---
 name: time-weather-skill
-description: Retrieve real-time local time, timezone, and live weather conditions (temperature, humidity, condition, wind) for any city globally without requiring any API key via Open-Meteo.
+description: Weather forecasts and current time for global cities.
 ---
 
 # Time and Weather Skill

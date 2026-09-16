@@ -5,7 +5,7 @@ import requests
 from google import genai
 from google.genai import types
 
-from config import GEMINI_API_KEY, GEMMA_PRIMARY_MODEL, GEMMA_FALLBACK_MODEL
+from config import GEMINI_API_KEY, GEMMA_PRIMARY_MODEL, GEMMA_FALLBACK_MODEL, MAX_TOKEN_LOCAL, MAX_TOKEN_EXTERNAL
 from services.logger_service import log_call
 
 
@@ -186,21 +186,33 @@ class GemmaService:
             user_content = question
 
         sys_prompt = system_instruction or default_system_prompt
-
         full_prompt = f"{sys_prompt}\n\n{user_content}"
-        request_payload = {
-            "model": "Llama-3.2-3B-Instruct",
-            "prompt": full_prompt,
-            "system": sys_prompt,
-            "messages": [
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            "target": "model",
-            "port": 8000,
-            "temperature": 0.2,
-            "max_tokens": 2048
-        }
+
+        # If endpoint is a chat endpoint, send only messages. For raw completion endpoints, send prompt.
+        # This prevents duplicating the large vector database context twice in the payload.
+        if "chat" in endpoint.lower() or "v1/chat" in endpoint.lower():
+            request_payload = {
+                "model": "Llama-3.2-3B-Instruct",
+                "system": sys_prompt,
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                "target": "model",
+                "port": 8000,
+                "temperature": 0.2,
+                "max_tokens": MAX_TOKEN_LOCAL
+            }
+        else:
+            request_payload = {
+                "model": "Llama-3.2-3B-Instruct",
+                "prompt": full_prompt,
+                "system": sys_prompt,
+                "target": "model",
+                "port": 8000,
+                "temperature": 0.2,
+                "max_tokens": MAX_TOKEN_LOCAL
+            }
 
         call_args = {
             "endpoint": endpoint,
@@ -402,28 +414,50 @@ class GemmaService:
             config = types.GenerateContentConfig(
                 system_instruction=system_instruction or default_system_prompt,
                 temperature=0.2,
-                max_output_tokens=2048,
+                max_output_tokens=MAX_TOKEN_EXTERNAL,
             )
 
-            try:
-                response = self.client.models.generate_content(
-                    model=model_name,
-                    contents=user_content,
-                    config=config
-                )
-            except Exception as primary_err:
-                # If primary model fails, attempt fallback model
-                if GEMMA_FALLBACK_MODEL and GEMMA_FALLBACK_MODEL != model_name:
-                    print(f"[GemmaService] Model {model_name} failed ({primary_err}), trying fallback {GEMMA_FALLBACK_MODEL}")
-                    model_name = GEMMA_FALLBACK_MODEL
-                    call_args["model"] = model_name
+            # Build prioritized fallback list to handle 503 UNAVAILABLE / capacity limits
+            candidate_models = [model_name]
+            standard_fallbacks = [
+                "models/gemini-2.5-flash-lite",
+                GEMMA_PRIMARY_MODEL,
+                "models/gemma-4-26b-a4b-it",
+                "models/gemini-2.5-pro",
+                GEMMA_FALLBACK_MODEL,
+                "models/gemma-4-31b-it"
+            ]
+            for fb in standard_fallbacks:
+                if fb and fb not in candidate_models:
+                    candidate_models.append(fb)
+
+            response = None
+            last_err = None
+            for candidate in candidate_models:
+                try:
                     response = self.client.models.generate_content(
-                        model=model_name,
+                        model=candidate,
                         contents=user_content,
                         config=config
                     )
-                else:
-                    raise primary_err
+                    model_name = candidate
+                    call_args["model"] = model_name
+                    break
+                except Exception as candidate_err:
+                    last_err = candidate_err
+                    err_str = str(candidate_err)
+                    # If 503 capacity limit or temporary server overload, seamlessly switch to next available model
+                    if any(kw in err_str.lower() for kw in ["503", "unavailable", "capacity", "overloaded", "resource_exhausted"]):
+                        print(f"[GemmaService] Model {candidate} unavailable ({err_str[:120]}), falling back to next model...")
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        # For other non-capacity errors, also try next candidate if available
+                        print(f"[GemmaService] Model {candidate} error ({err_str[:120]}), trying next fallback...")
+                        continue
+
+            if response is None:
+                raise last_err or RuntimeError("All candidate Google AI Studio models are currently at capacity.")
 
             duration_ms = (time.time() - start_time) * 1000
             answer_text = response.text or ""
@@ -469,7 +503,7 @@ class GemmaService:
                     "prompt_length_chars": len(user_content),
                     "context_chunks_count": len(retrieved_chunks),
                     "temperature": 0.2,
-                    "max_output_tokens": 2048
+                    "max_output_tokens": MAX_TOKEN_EXTERNAL
                 },
                 "response": {
                     "model_used": model_name,

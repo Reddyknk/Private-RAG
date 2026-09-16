@@ -48,12 +48,16 @@ def extract_skill_metadata(text: str, default_name: str = "skill") -> tuple[str,
     return name, description
 
 
-def split_text_into_chunks(text: str, chunk_size: int = 800, chunk_overlap: int = 120) -> List[str]:
+def split_text_into_chunks(text: str, chunk_size: int = 500, chunk_overlap: Optional[int] = None) -> List[str]:
     """
-    Split a body of text into overlapping chunks respecting sentence/paragraph boundaries where possible.
+    Split a body of text into overlapping chunks with about 20% overlap
+    respecting sentence/paragraph boundaries where possible.
     """
     if not text or not text.strip():
         return []
+
+    if chunk_overlap is None:
+        chunk_overlap = max(1, int(chunk_size * 0.20))
 
     text = re.sub(r'\s+', ' ', text).strip()
     if len(text) <= chunk_size:
@@ -95,11 +99,13 @@ def split_text_into_chunks(text: str, chunk_size: int = 800, chunk_overlap: int 
     return [c for c in chunks if c]
 
 
-def load_from_url(url: str, chunk_size: int = 800, chunk_overlap: int = 120) -> List[Document]:
+def load_from_url(url: str, chunk_size: int = 500, chunk_overlap: Optional[int] = None) -> List[Document]:
     """
     Fetch a web page or online document, extract clean text,
     and log the external HTTP call to database/logs.json.
     """
+    if chunk_overlap is None:
+        chunk_overlap = max(1, int(chunk_size * 0.20))
     start_time = time.time()
     headers = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -190,13 +196,16 @@ def load_from_url(url: str, chunk_size: int = 800, chunk_overlap: int = 120) -> 
 
 def load_from_directory(
     dir_path: str,
-    chunk_size: int = 800,
-    chunk_overlap: int = 120,
+    chunk_size: int = 500,
+    chunk_overlap: Optional[int] = None,
     allowed_extensions: Optional[List[str]] = None
 ) -> List[Document]:
     """
-    Recursively scan a local directory, read documents, and split them into chunks.
+    Recursively scan a local directory, read documents, and split them into chunks with ~20% overlap.
     """
+    if chunk_overlap is None:
+        chunk_overlap = max(1, int(chunk_size * 0.20))
+
     if allowed_extensions is None:
         allowed_extensions = [".txt", ".md", ".markdown", ".pdf", ".py", ".json", ".csv", ".html", ".rst"]
 

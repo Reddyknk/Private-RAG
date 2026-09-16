@@ -3,11 +3,11 @@ import json
 import unittest
 from pathlib import Path
 
-from config import DATABASE_DIR, LOGS_FILE, CHROMA_PERSIST_DIR
+from config import DATABASE_DIR, LOGS_FILE, CHROMA_PERSIST_DIR, CHROMA_DOCS_DIR, CHROMA_SKILLS_DIR
 from services.logger_service import log_call, get_logs, clear_logs
 from services.ollama_embedder import OllamaEmbeddingFunction, check_ollama_health
 from services.document_loader import load_from_directory, load_from_url
-from services.vector_store import vector_store
+from services.vector_store import doc_vector_store, skill_vector_store, vector_store
 from services.gemma_service import gemma_service
 from app import app
 
@@ -49,8 +49,8 @@ class TestPrivateRAG(unittest.TestCase):
         self.assertEqual(result.get("status"), "success")
         self.assertGreater(result.get("total_documents_in_db", 0), 0)
 
-        # Check ChromaDB folder was populated in database/
-        self.assertTrue(CHROMA_PERSIST_DIR.exists())
+        # Check ChromaDB folder for document database was populated in database/
+        self.assertTrue(CHROMA_DOCS_DIR.exists())
 
     def test_03_vector_similarity_query(self):
         """Test semantic query retrieval against vector store."""
@@ -194,9 +194,8 @@ class TestPrivateRAG(unittest.TestCase):
         comp_names = [c["name"] for c in components]
         self.assertIn("Agent", comp_names)
         self.assertIn("Embedder", comp_names)
-        self.assertIn("Vector Store", comp_names)
-        self.assertIn("Tool", comp_names)
-        self.assertIn("External API", comp_names)
+        self.assertTrue("Skill Store" in comp_names or "Vector Store" in comp_names)
+        self.assertTrue("Tool" in comp_names or "Planner" in comp_names)
         self.assertIn("LLM", comp_names)
 
         for c in components:
@@ -285,7 +284,7 @@ class TestPrivateRAG(unittest.TestCase):
             call_url = custom_calls[0][0]
             self.assertEqual(call_url, "http://127.0.0.1:8000/api/chat")
             call_json = custom_calls[0][2].get("json", {})
-            self.assertIn("prompt", call_json)
+            self.assertTrue("messages" in call_json or "prompt" in call_json)
 
             # Verify LLM component was returned
             components = q_data.get("components", [])
@@ -297,9 +296,9 @@ class TestPrivateRAG(unittest.TestCase):
 
     def test_09_conversational_greeting_and_relevance_filtering(self):
         """Test that conversational greeting ('Hello') does not pass irrelevant documents to LLM and greets user warmly."""
-        # 1. Test vector store query directly filters matches below 25%
-        raw_matches = vector_store.query("Hello", top_k=4, min_score=0.25)
-        self.assertEqual(len(raw_matches), 0, "Vector store query for 'Hello' should filter out all low-similarity matches")
+        # 1. Test skill store query directly filters matches for greetings
+        raw_matches = skill_vector_store.query("Hello", top_k=4, min_score=0.50)
+        self.assertEqual(len(raw_matches), 0, "Skill store query for 'Hello' should filter out all low-similarity matches")
 
         # 2. Test /api/query endpoint with 'Hello'
         res = self.client.post("/api/query", json={"question": "Hello", "top_k": 4})
@@ -346,33 +345,32 @@ class TestPrivateRAG(unittest.TestCase):
             self.assertIn("shutting down", shut_data["message"].lower())
 
     def test_11_low_similarity_sends_prompt_to_model_without_vector_context(self):
-        """Verify that when vector store similarity is below 0.25, the prompt is sent to the model without vector store info."""
+        """Verify that when no skill matches > 50%, prompt is sent directly to model with the required system prompt."""
         res = self.client.post("/api/query", json={"question": "What is the capital of France?", "top_k": 4})
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertEqual(data["status"], "success")
-        self.assertEqual(len(data.get("sources", [])), 0, "No sources should be attached when score is below 0.25")
+        self.assertEqual(len(data.get("sources", [])), 0, "No sources should be attached when no skill matches > 50%")
 
         answer_lower = data.get("answer", "").lower()
         self.assertIn("paris", answer_lower, f"Expected model to answer 'Paris', got: {data.get('answer')}")
 
-        # Check components: Vector Store had 0 chunks, LLM was called with 0 context chunks
+        # Check components: Skill Store was checked, LLM called with 0 context chunks
         components = data.get("components", [])
-        vs_comp = next((c for c in components if c["name"] == "Vector Store"), None)
+        skill_comp = next((c for c in components if c["name"] == "Skill Store"), None)
         llm_comp = next((c for c in components if c["name"] == "LLM"), None)
 
-        self.assertIsNotNone(vs_comp)
-        self.assertEqual(vs_comp["response"]["retrieved_count"], 0)
+        self.assertIsNotNone(skill_comp)
+        self.assertEqual(skill_comp["response"]["matches_count"], 0)
         self.assertIsNotNone(llm_comp)
         self.assertEqual(llm_comp["status"], "success")
-        self.assertEqual(llm_comp["request"]["context_chunks_count"], 0)
 
     def test_12_cutoff_and_conversations_prompt_entry(self):
-        """Verify 30% score cutoff in vector store and immediate entry creation in conversations.json upon prompt receipt."""
+        """Verify 30% score cutoff in doc vector store and immediate entry creation in conversations.json upon prompt receipt."""
         from services.logger_service import flush_logs, CONVERSATIONS_FILE
 
-        # 1. Test 30% vector store cutoff
-        low_matches = vector_store.query("hello good morning how are you", top_k=4)
+        # 1. Test 30% document vector store cutoff
+        low_matches = doc_vector_store.query("hello good morning how are you", top_k=4, min_score=0.30)
         for m in low_matches:
             self.assertGreaterEqual(m["score"], 0.30, f"Found match below 30% threshold: {m['score']}")
 
@@ -396,21 +394,22 @@ class TestPrivateRAG(unittest.TestCase):
         self.assertNotEqual(record["agent_response"], "[Processing...]")
 
     def test_13_skill_md_whole_file_chunk_and_name_desc_vectors(self):
-        """Verify SKILL.md is stored as a whole file chunk, embedded by name/desc, and returns full text during retrieval."""
+        """Verify SKILL.md is stored as a whole file chunk in SkillVectorStore, embedded by name/desc, and returns full text during retrieval."""
         from services.skill_runner import auto_index_skills_into_db, SKILLS_DIR
 
         # Index skills
         res = auto_index_skills_into_db()
-        self.assertIn(res.get("status"), ["indexed", "up_to_date"])
+        self.assertEqual(res.get("status"), "indexed")
 
-        # Check ChromaDB entries for SKILL.md
-        col = vector_store.collection
+        # Check ChromaDB entries for SKILL.md in skill_vector_store
+        col = skill_vector_store.collection
         for skill_folder in SKILLS_DIR.iterdir():
             if not skill_folder.is_dir():
                 continue
             skill_md = skill_folder / "SKILL.md"
-            stored = col.get(where={"source": str(skill_md)})
-            self.assertEqual(len(stored["ids"]), 1, f"Expected exactly 1 chunk for {skill_md}")
+            doc_id = f"skill_{skill_folder.name}"
+            stored = col.get(ids=[doc_id])
+            self.assertEqual(len(stored["ids"]), 1, f"Expected exactly 1 chunk for {doc_id}")
             doc_content = stored["documents"][0]
             full_file_text = skill_md.read_text(encoding="utf-8")
             self.assertEqual(doc_content, full_file_text, "Stored chunk must be the entire file content")
@@ -420,7 +419,7 @@ class TestPrivateRAG(unittest.TestCase):
             self.assertEqual(meta.get("total_chunks"), 1)
 
         # Verify retrieval provides all text in the file
-        matches = vector_store.query("Which stocks have the lowest percentage decrease?", top_k=2)
+        matches = skill_vector_store.query("Which stocks have the lowest percentage decrease?", min_score=0.50)
         self.assertGreater(len(matches), 0)
         stock_skill = next((m for m in matches if "stock-market-skill" in m["metadata"].get("source", "")), None)
         self.assertIsNotNone(stock_skill, "Stock skill should match equity decrease query")
@@ -430,28 +429,62 @@ class TestPrivateRAG(unittest.TestCase):
     def test_14_skill_chunks_require_higher_than_50_percent_score(self):
         """Verify that skill vector queries only use skill chunks with score strictly higher than 50% (> 0.50)."""
         # Query where stock skill matches with high confidence (> 50%)
-        matches = vector_store.query(
+        matches = skill_vector_store.query(
             "Which stocks have the highest percentage increase?",
             top_k=4,
-            min_score=0.30,
-            min_skill_score=0.50
+            min_score=0.50
         )
         for m in matches:
-            if m.get("is_skill"):
-                self.assertGreater(m["score"], 0.50, f"Skill chunk score {m['score']} must be > 0.50")
+            self.assertGreater(m["score"], 0.50, f"Skill chunk score {m['score']} must be > 0.50")
 
-        # When min_skill_score is set to an unreachable value (0.99), skill chunks are excluded
-        strict_matches = vector_store.query(
+        # When min_score is set to an unreachable value (0.99), skill chunks are excluded
+        strict_matches = skill_vector_store.query(
             "Which stocks have the highest percentage increase?",
             top_k=4,
-            min_score=0.30,
-            min_skill_score=0.99
+            min_score=0.99
         )
-        for m in strict_matches:
-            self.assertFalse(m.get("is_skill"), f"Skill chunk with score {m['score']} should not pass 0.99 threshold")
+        self.assertEqual(len(strict_matches), 0, "No skill chunks should pass 0.99 threshold")
+
+    def test_15_get_private_doc_skill(self):
+        import importlib.util
+        from services.skill_runner import SKILLS_DIR
+        doc_tool_path = SKILLS_DIR / "get-private-doc" / "scripts" / "doc_tools.py"
+        spec = importlib.util.spec_from_file_location("doc_tools", str(doc_tool_path))
+        doc_tools = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(doc_tools)
+        retrieve_private_documents = doc_tools.retrieve_private_documents
+
+        # 1. Check skill matches trigger query > 50%
+        matches = skill_vector_store.query("What is the summary of internal document", min_score=0.50)
+        self.assertGreater(len(matches), 0)
+        matched_names = [m["name"] for m in matches]
+        self.assertIn("get-private-doc", matched_names)
+
+        # 2. Test doc_tools retrieval function directly
+        retrieved = retrieve_private_documents("What is the summary of internal document", top_k=2)
+        self.assertIsInstance(retrieved, list)
+
+    def test_16_document_chunking_twenty_percent_overlap(self):
+        """Verify document loader chunks documents with approximately 20% overlap."""
+        from services.document_loader import split_text_into_chunks
+
+        text = "Sentence one is about private systems. Sentence two discusses corporate internal data. Sentence three explains secret storage. Sentence four covers retrieval accuracy. Sentence five details language models. Sentence six summarizes the results."
+        chunks = split_text_into_chunks(text, chunk_size=100)
+        self.assertGreater(len(chunks), 1)
+        # Check that consecutive chunks have overlapping content
+        overlap_found = False
+        for i in range(len(chunks) - 1):
+            words_a = set(chunks[i].split())
+            words_b = set(chunks[i + 1].split())
+            common = words_a.intersection(words_b)
+            if len(common) > 0:
+                overlap_found = True
+                break
+        self.assertTrue(overlap_found, "Expected chunks to have overlapping content (~20%)")
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

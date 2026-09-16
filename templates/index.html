@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" type="image/gif" href="/static/images/ai-brain-ani-32.gif">
+    <link rel="icon" type="image/png" href="/static/images/AI_icon_s.png">
     <title>Agent with RAG | Local Vector Database & Gemma QA</title>
     <meta name="description"
         content="Agent with RAG: Local Retrieval-Augmented Generation system with ChromaDB vector storage, Ollama embeddings, and Google AI Studio Gemma answers.">
@@ -23,7 +23,7 @@
         <!-- Top Navigation Header with Tabs -->
         <header class="app-header">
             <div class="brand">
-                <img src="/static/images/ai-brain-ani-48.gif" alt="Agent with RAG" class="brand-image-icon" width="48"
+                <img src="/static/images/AI_icon.png" alt="Agent with RAG" class="brand-image-icon" width="48"
                     height="48">
                 <div class="brand-text">
                     <h1>Agent with <span class="gradient-text">RAG</span></h1>
@@ -290,7 +290,10 @@
                     <!-- Right: Live Ingestion Status & Recent Sources Card -->
                     <div class="card glass-card">
                         <div class="card-header">
-                            <h3>Vector Storage Status</h3>
+                            <div>
+                                <h3>Vector Storage Status</h3>
+                                <p class="section-desc" style="margin: 0; font-size: 12px; color: var(--text-muted);">Document Database (<code>database/chroma_docs</code>)</p>
+                            </div>
                             <button class="btn btn-sm btn-outline-danger" id="btnResetDb"
                                 onclick="confirmResetDb()">Reset DB</button>
                         </div>
@@ -320,7 +323,7 @@
 
                         <!-- Indexed Sources List -->
                         <div class="sources-list-section">
-                            <h4>Indexed Knowledge Sources</h4>
+                            <h4>Ingested Documents in Docs Database</h4>
                             <div class="sources-list" id="indexedSourcesList">
                                 <p class="text-muted">Loading indexed sources...</p>
                             </div>
@@ -624,8 +627,7 @@
                 <div class="warning-alert-box">
                     <div class="alert-icon">⚠️</div>
                     <div class="alert-text">
-                        <strong>Warning:</strong> Shutting down will terminate the server process and <strong>disable
-                            the application for all users</strong>.
+                        <strong>Warning:</strong> Shutting down will terminate the server process and will <strong>disable the app for all users</strong> (disable the application for all users).
                     </div>
                 </div>
                 <p class="text-secondary" style="margin-top: 14px; font-size: 13.5px; line-height: 1.6;">

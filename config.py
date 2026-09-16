@@ -9,10 +9,13 @@ BASE_DIR = Path(__file__).resolve().parent
 DATABASE_DIR = BASE_DIR / "database"
 LOGS_FILE = DATABASE_DIR / "logs.json"
 CHROMA_PERSIST_DIR = DATABASE_DIR / "chroma_db"
+CHROMA_DOCS_DIR = DATABASE_DIR / "chroma_docs"
+CHROMA_SKILLS_DIR = DATABASE_DIR / "chroma_skills"
 
-# Ensure database directory exists
+# Ensure active database directories exist
 DATABASE_DIR.mkdir(parents=True, exist_ok=True)
-CHROMA_PERSIST_DIR.mkdir(parents=True, exist_ok=True)
+CHROMA_DOCS_DIR.mkdir(parents=True, exist_ok=True)
+CHROMA_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Google AI Studio configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -27,3 +30,7 @@ OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "all-minilm")
 # Web server configuration
 PORT = int(os.getenv("PORT", 8005)) # Port 8005 for Private RAG app
 FLASK_DEBUG = os.getenv("FLASK_DEBUG", "True").lower() in ("true", "1", "yes")
+
+# Maximum number of tokens to generate. The local model may be a smaller model or quantized model.
+MAX_TOKEN_LOCAL=1024
+MAX_TOKEN_EXTERNAL=2048

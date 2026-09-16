@@ -1,17 +1,26 @@
 import os
 import re
+import sys
 import json
 import time
 import subprocess
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from services.document_loader import load_from_directory, Document, extract_skill_metadata
-from services.vector_store import vector_store
+from services.document_loader import Document, extract_skill_metadata
+from services.vector_store import skill_vector_store, doc_vector_store
+from services.ollama_embedder import OllamaEmbeddingFunction
 from services.logger_service import log_event
-
+from services.gemma_service import gemma_service
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+NO_SKILL_SYSTEM_PROMPT = (
+    "You are a helpful, respectful, and honest assistant. "
+    "Always answer as truthfully as possible, use clear markdown formatting, "
+    "and admit when you do not know an answer rather than guessing."
+)
 
 
 def get_available_skills() -> List[Dict[str, Any]]:
@@ -20,27 +29,18 @@ def get_available_skills() -> List[Dict[str, Any]]:
         return []
 
     skills = []
-    for skill_folder in SKILLS_DIR.iterdir():
+    for skill_folder in sorted(SKILLS_DIR.iterdir()):
         if not skill_folder.is_dir():
             continue
         skill_md = skill_folder / "SKILL.md"
         if not skill_md.exists():
             continue
 
-        # Parse frontmatter if present
         title = skill_folder.name
         desc = ""
         try:
-            with open(skill_md, "r", encoding="utf-8") as f:
-                content = f.read()
-                if content.startswith("---"):
-                    parts = content.split("---", 2)
-                    if len(parts) >= 3:
-                        for line in parts[1].splitlines():
-                            if line.startswith("name:"):
-                                title = line.replace("name:", "").strip()
-                            elif line.startswith("description:"):
-                                desc = line.replace("description:", "").strip()
+            content = skill_md.read_text(encoding="utf-8")
+            title, desc = extract_skill_metadata(content, default_name=skill_folder.name)
         except Exception:
             pass
 
@@ -61,18 +61,16 @@ def get_available_skills() -> List[Dict[str, Any]]:
 
 def auto_index_skills_into_db() -> Dict[str, Any]:
     """
-    Auto-discovers all skills in skills/ and embeds their SKILL.md into the vector database
-    using Ollama embeddings as specified in SKILL_SPEC.md.
-    When adding SKILL.md to the vector store:
-    - Only create the vectors using the name and description in the file.
-    - The chunk is the whole file.
-    - During retrieval, provide all the text in the file.
+    Scans the skills/ folder to get all skills.
+    Only the name and description of each SKILL.md are sent to the embedder.
+    When the embedding is received, the vectors and the complete text of the SKILL.md
+    are stored in the skill database (database/chroma_skills).
     """
     if not SKILLS_DIR.exists():
         return {"status": "skipped", "message": "skills/ directory does not exist."}
 
     try:
-        docs = []
+        added_count = 0
         for skill_folder in sorted(SKILLS_DIR.iterdir()):
             if not skill_folder.is_dir():
                 continue
@@ -90,387 +88,500 @@ def auto_index_skills_into_db() -> Dict[str, Any]:
 
             name, desc = extract_skill_metadata(content, default_name=skill_folder.name)
 
-            docs.append(Document(
-                content=content,  # The chunk is the whole file!
+            # Store in skill database: only name and description are embedded, complete text is saved
+            skill_vector_store.add_skill(
+                skill_id=skill_folder.name,
+                name=name,
+                description=desc,
+                full_content=content,
                 metadata={
                     "source": str(skill_md),
                     "relative_path": str(skill_md.relative_to(SKILLS_DIR)),
-                    "source_type": "skill",
-                    "title": f"Skill: {name}",
-                    "filename": "SKILL.md",
-                    "file_extension": ".md",
-                    "chunk_index": 0,
-                    "total_chunks": 1,
-                    "is_skill_md": True,
                     "skill_name": name,
                     "skill_description": desc
                 }
-            ))
+            )
+            added_count += 1
 
-        if not docs:
-            return {"status": "skipped", "message": "No skill files found to index."}
-
-        col = vector_store.collection
-        docs_to_index = []
-        for doc in docs:
-            src = doc.metadata.get("source")
-            existing = col.get(where={"source": src})
-            # If multiple chunks exist (legacy chunking) or not tagged as single whole file, delete and reindex
-            if existing and existing.get("ids"):
-                ids = existing["ids"]
-                metas = existing.get("metadatas") or []
-                is_proper_whole_chunk = (
-                    len(ids) == 1
-                    and metas
-                    and metas[0].get("is_skill_md")
-                    and metas[0].get("chunk_index") == 0
-                    and metas[0].get("total_chunks") == 1
-                )
-                if not is_proper_whole_chunk:
-                    col.delete(ids=ids)
-                    docs_to_index.append(doc)
-            else:
-                docs_to_index.append(doc)
-
-        # Purge any legacy non-SKILL.md artifacts (like data/registry.csv or scripts/*.py) under skills/
-        try:
-            sample = col.get(limit=min(col.count(), 1000), include=["metadatas"])
-            purge_ids = []
-            for cid, meta in zip(sample.get("ids", []), sample.get("metadatas", [])):
-                if meta and "source" in meta and str(SKILLS_DIR) in str(meta["source"]):
-                    if Path(meta["source"]).name.lower() != "skill.md":
-                        purge_ids.append(cid)
-            if purge_ids:
-                col.delete(ids=purge_ids)
-        except Exception:
-            pass
-
-        if not docs_to_index:
-            return {
-                "status": "up_to_date",
-                "message": "All skills are already indexed as whole-file chunks in the vector database.",
-                "total_documents": col.count()
-            }
-
-        result = vector_store.add_documents(docs_to_index)
         return {
             "status": "indexed",
-            "message": f"Successfully indexed {len(docs_to_index)} skill(s) into vector database using name and description vectors.",
-            "added_chunks": len(docs_to_index),
-            "total_documents": result.get("total_documents_in_db", 0)
+            "message": f"Successfully indexed {added_count} skills into skill database using name & description vectors.",
+            "total_skills": skill_vector_store.collection.count()
         }
     except Exception as e:
         return {"status": "error", "message": f"Skill indexing failed: {e}"}
 
 
-def execute_skill_tools_if_relevant(
+def execute_instruction(
+    instruction: str,
     question: str,
-    retrieved_chunks: List[Dict[str, Any]],
+    active_skills: List[Dict[str, Any]],
     conversation_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Examines retrieved chunks and user question.
-    If a skill tool applies, executes the bundled tool script, logs Tool and External API
-    invocations asynchronously into database/logs.json with full request/response payloads,
-    and returns both chunks and structured component descriptions for the message.
+    Agent executes the plan or instruction received from the LLM model.
+    Runs the appropriate tool script (e.g. doc_tools.py, stock_tools.py, env_tools.py)
+    and returns tool output chunks, logs, and structured UI components.
     """
-    sources = [c.get("metadata", {}).get("source", "") for c in retrieved_chunks]
+    start_time = time.time()
     q_lower = question.lower()
+    inst_lower = instruction.lower()
     tool_chunks: List[Dict[str, Any]] = []
     components: List[Dict[str, Any]] = []
+    raw_output = ""
 
-    # 1. Check for time & weather skill
-    has_weather_skill = any("time-weather-skill" in s for s in sources) or any(
-        kw in q_lower for kw in ["weather", "time in", "temperature", "humidity", "weather of", "time of"]
-    )
-    if has_weather_skill:
-        # Extract city from question
-        patterns = [
-            r'(?:time and weather of|time and weather in|weather of|weather in|time of|time in|temperature in|weather for|time for)\s+(?:the city of\s+)?([A-Za-z\s\.\-]+?)(?:\?|\.|\$|,|$)',
-            r'in\s+([A-Za-z\s\.\-]+?)(?:\?|\.|\$|,|$)',
-            r'of\s+([A-Za-z\s\.\-]+?)(?:\?|\.|\$|,|$)'
-        ]
-        city = None
-        for p in patterns:
-            m = re.search(p, question, re.IGNORECASE)
-            if m:
-                cand = m.group(1).strip()
-                if cand and len(cand) > 1 and cand.lower() not in [
-                    "the city", "a city", "this city", "city", "my city", "stock", "stocks"
-                ]:
-                    city = cand
-                    break
+    # Check which skill is active
+    active_skill_names = [s.get("name", "").lower() for s in active_skills] + [s.get("skill_id", "").lower() for s in active_skills]
 
-        if not city:
-            for common_city in ["Tokyo", "Paris", "London", "New York", "San Francisco", "Berlin", "Sydney", "Singapore", "Toronto", "Chicago", "Dubai"]:
-                if common_city.lower() in q_lower:
-                    city = common_city
-                    break
+    # 1. get-private-doc skill
+    if any("get-private-doc" in s or "private-doc" in s for s in active_skill_names) or "doc_tools.py" in inst_lower:
+        script_path = SKILLS_DIR / "get-private-doc" / "scripts" / "doc_tools.py"
+        search_query = question
+        # Extract query argument if formatted in instruction
+        q_match = re.search(r'--query\s+["\']([^"\']+)["\']', instruction)
+        if q_match:
+            search_query = q_match.group(1)
 
-        if city:
-            unit = "fahrenheit" if ("fahrenheit" in q_lower or " °f" in q_lower) else "celsius"
-            script_path = SKILLS_DIR / "time-weather-skill" / "scripts" / "env_tools.py"
-            if script_path.exists():
-                start_tool_time = time.time()
-                cmd = ["python3", str(script_path), city, "--unit", unit, "--json"]
-                tool_req = {
-                    "tool": "env_tools.py",
-                    "city": city,
-                    "unit": unit,
-                    "command": cmd
-                }
-                try:
-                    res = subprocess.check_output(cmd, timeout=8).decode("utf-8")
-                    duration_ms = (time.time() - start_tool_time) * 1000
+        cmd = [sys.executable, str(script_path), "--query", search_query, "--top-k", "4", "--json"]
+        tool_req = {"tool": "doc_tools.py", "query": search_query, "command": cmd}
 
-                    try:
-                        parsed_res = json.loads(res)
-                    except Exception:
-                        parsed_res = {"raw_output": res}
+        try:
+            res = subprocess.check_output(cmd, cwd=str(REPO_ROOT), timeout=15).decode("utf-8")
+            raw_output = res
+            parsed_res = json.loads(res) if res.strip().startswith("{") else {"raw_output": res}
+            docs = parsed_res.get("documents", [])
 
-                    # Log Tool Invocation
-                    log_event(
-                        event_type="Tool",
-                        invoker="Agent",
-                        target="env_tools.py (Open-Meteo API)",
-                        short_description=f"Executed env_tools.py for '{city}' ({unit})",
-                        payload={
-                            "request": tool_req,
-                            "response": parsed_res
-                        },
-                        conversation_id=conversation_id,
-                        duration_ms=duration_ms,
-                        status="success"
-                    )
+            duration_ms = (time.time() - start_time) * 1000
+            log_event(
+                event_type="Tool",
+                invoker="Agent",
+                target="doc_tools.py (Private Document Database)",
+                short_description=f"Retrieved {len(docs)} private document section(s)",
+                payload={"request": tool_req, "response": parsed_res},
+                conversation_id=conversation_id,
+                duration_ms=duration_ms,
+                status="success"
+            )
 
-                    components.append({
-                        "name": "Tool",
-                        "role": "Skill Script",
-                        "icon": "🛠️",
-                        "status": "success",
-                        "duration_ms": round(duration_ms, 2),
-                        "description": f"Executed env_tools.py for city '{city}' ({unit})",
-                        "request": tool_req,
-                        "response": {
-                            "status": parsed_res.get("status", "success"),
-                            "city": parsed_res.get("city", city),
-                            "local_time": parsed_res.get("local_time"),
-                            "weather": parsed_res.get("weather", {})
-                        }
-                    })
+            components.append({
+                "name": "Tool",
+                "role": "Skill Script",
+                "icon": "📄",
+                "status": "success",
+                "duration_ms": round(duration_ms, 2),
+                "description": f"Executed doc_tools.py: retrieved {len(docs)} document chunk(s)",
+                "request": tool_req,
+                "response": {"count": len(docs), "query": search_query}
+            })
 
-                    # Log each External API call performed by the tool
-                    external_apis = parsed_res.get("external_apis", [])
-                    if external_apis:
-                        for api_info in external_apis:
-                            api_name = api_info.get("name", "Open-Meteo API")
-                            api_url = api_info.get("url", "")
-                            api_method = api_info.get("method", "GET")
-                            api_status = api_info.get("status_code", 200)
-
-                            api_req = api_info.get("request", {"method": api_method, "url": api_url})
-                            api_resp = api_info.get("response", {"status_code": api_status})
-
-                            log_event(
-                                event_type="External API",
-                                invoker="Tool (env_tools.py)",
-                                target=api_name,
-                                short_description=f"HTTP {api_method} {api_url[:55]}...",
-                                payload={
-                                    "request": api_req,
-                                    "response": api_resp
-                                },
-                                conversation_id=conversation_id,
-                                duration_ms=round(duration_ms / max(1, len(external_apis)), 2),
-                                status="success" if api_status == 200 else "error"
-                            )
-
-                            components.append({
-                                "name": "External API",
-                                "role": "Public Web API",
-                                "icon": "🌐",
-                                "status": "success" if api_status == 200 else "error",
-                                "duration_ms": round(duration_ms / max(1, len(external_apis)), 2),
-                                "description": f"Called {api_name} ({api_url[:45]}...)",
-                                "request": api_req,
-                                "response": api_resp
-                            })
-
-                    tool_chunks.append({
-                        "content": (
-                            f"=== LIVE TOOL EXECUTION: env_tools.py ({city}) ===\n"
-                            f"{res}\n"
-                            f"=== END LIVE TOOL RESULT ==="
-                        ),
-                        "metadata": {
-                            "source": str(script_path),
-                            "title": f"Live Weather & Time Output: {city}",
-                            "type": "live_tool_execution"
-                        },
-                        "score": 1.0
-                    })
-                except Exception as e:
-                    duration_ms = (time.time() - start_tool_time) * 1000
-                    err_resp = {"error": str(e)}
-                    log_event(
-                        event_type="Tool",
-                        invoker="Agent",
-                        target="env_tools.py (Open-Meteo API)",
-                        short_description=f"Error executing weather tool for '{city}'",
-                        payload={"request": tool_req, "response": err_resp},
-                        conversation_id=conversation_id,
-                        duration_ms=duration_ms,
-                        status="error"
-                    )
-                    components.append({
-                        "name": "Tool",
-                        "role": "Skill Script",
-                        "icon": "🛠️",
-                        "status": "error",
-                        "duration_ms": round(duration_ms, 2),
-                        "description": f"Failed executing env_tools.py: {str(e)}",
-                        "request": tool_req,
-                        "response": err_resp
-                    })
-                    print(f"[SkillRunner] Error executing env_tools.py: {e}")
-
-    # 2. Check for stock market screener skill
-    has_stock_skill = any("stock-market-skill" in s for s in sources) or any(
-        kw in q_lower for kw in [
-            "stock", "stocks", "gainers", "losers", "percentage increase",
-            "percentage decrease", "top gainer", "top loser", "market mover"
-        ]
-    )
-    if has_stock_skill:
-        is_losers = any(kw in q_lower for kw in [
-            "decrease", "loss", "losers", "drop", "dropped", "fell", "fall", "down", "negative", "declined"
-        ])
-        flag = "--losers" if is_losers else "--gainers"
-        script_path = SKILLS_DIR / "stock-market-skill" / "scripts" / "stock_tools.py"
-
-        if script_path.exists():
-            start_tool_time = time.time()
-            cmd = ["python3", str(script_path), flag, "--limit", "5", "--json"]
-            tool_req = {
-                "tool": "stock_tools.py",
-                "metric": flag,
-                "command": cmd
-            }
-            try:
-                res = subprocess.check_output(cmd, timeout=8).decode("utf-8")
-                duration_ms = (time.time() - start_tool_time) * 1000
-
-                try:
-                    parsed_res = json.loads(res)
-                except Exception:
-                    parsed_res = {"raw_output": res}
-
-                # Log Tool Invocation
-                log_event(
-                    event_type="Tool",
-                    invoker="Agent",
-                    target="stock_tools.py (Yahoo Finance Screener)",
-                    short_description=f"Executed stock screener for {flag.replace('--', '')}",
-                    payload={
-                        "request": tool_req,
-                        "response": parsed_res
+            # Format document sections as tool chunks
+            for d in docs:
+                tool_chunks.append({
+                    "content": d.get("content", ""),
+                    "metadata": {
+                        "source": d.get("source", "private_database"),
+                        "title": d.get("title", "Internal Document"),
+                        "chunk_index": d.get("chunk_index", 0),
+                        "type": "private_doc"
                     },
+                    "score": d.get("score", 0.0)
+                })
+
+            if not tool_chunks:
+                tool_chunks.append({
+                    "content": f"No document sections matched query '{search_query}' in the private document database.",
+                    "metadata": {"source": str(script_path), "title": "Private Document Database"},
+                    "score": 0.0
+                })
+
+        except Exception as e:
+            raw_output = f"Error executing doc_tools.py: {e}"
+            print(f"[SkillRunner] {raw_output}")
+
+    # 2. stock-market-skill
+    elif any("stock-market" in s or "stock" in s for s in active_skill_names) or "stock_tools.py" in inst_lower:
+        script_path = SKILLS_DIR / "stock-market-skill" / "scripts" / "stock_tools.py"
+        is_losers = any(w in inst_lower or w in q_lower for w in ["loser", "losers", "decrease", "drop", "dropped", "fell", "down", "negative"])
+        flag = "--losers" if is_losers else "--gainers"
+        cmd = [sys.executable, str(script_path), flag, "--limit", "5", "--json"]
+        tool_req = {"tool": "stock_tools.py", "metric": flag, "command": cmd}
+
+        try:
+            res = subprocess.check_output(cmd, cwd=str(REPO_ROOT), timeout=15).decode("utf-8")
+            raw_output = res
+            parsed_res = json.loads(res) if res.strip().startswith("{") else {"raw_output": res}
+
+            duration_ms = (time.time() - start_time) * 1000
+            log_event(
+                event_type="Tool",
+                invoker="Agent",
+                target="stock_tools.py (Live Screener / Registry)",
+                short_description=f"Executed stock screener for {flag.replace('--', '')}",
+                payload={"request": tool_req, "response": parsed_res},
+                conversation_id=conversation_id,
+                duration_ms=duration_ms,
+                status="success"
+            )
+
+            components.append({
+                "name": "Tool",
+                "role": "Skill Script",
+                "icon": "📈",
+                "status": "success",
+                "duration_ms": round(duration_ms, 2),
+                "description": f"Executed stock_tools.py for {flag.replace('--', '')}",
+                "request": tool_req,
+                "response": {"metric": parsed_res.get("metric", flag), "count": parsed_res.get("count", 0)}
+            })
+
+            # Check for logged external APIs
+            for api_info in parsed_res.get("external_apis", []):
+                log_event(
+                    event_type="External API",
+                    invoker="Tool (stock_tools.py)",
+                    target=api_info.get("name", "Market API"),
+                    short_description=f"HTTP {api_info.get('method', 'GET')} {api_info.get('url', '')[:50]}...",
+                    payload={"request": api_info.get("request", {}), "response": api_info.get("response", {})},
                     conversation_id=conversation_id,
-                    duration_ms=duration_ms,
+                    duration_ms=round(duration_ms / 2, 2),
                     status="success"
                 )
 
-                components.append({
-                    "name": "Tool",
-                    "role": "Skill Script",
-                    "icon": "🛠️",
-                    "status": "success",
-                    "duration_ms": round(duration_ms, 2),
-                    "description": f"Executed stock_tools.py screener for {flag.replace('--', '')}",
-                    "request": tool_req,
-                    "response": {
-                        "metric": parsed_res.get("metric", flag),
-                        "count": parsed_res.get("count", len(parsed_res.get("data", []))),
-                        "top_ticker": parsed_res.get("data", [{}])[0].get("symbol") if parsed_res.get("data") else None
-                    }
-                })
+            tool_chunks.append({
+                "content": f"=== LIVE TOOL EXECUTION: stock_tools.py ({flag}) ===\n{res}\n=== END LIVE TOOL RESULT ===",
+                "metadata": {"source": str(script_path), "title": f"Live Stock Output ({flag})", "type": "live_tool_execution"},
+                "score": 1.0
+            })
+        except Exception as e:
+            raw_output = f"Error executing stock_tools.py: {e}"
+            print(f"[SkillRunner] {raw_output}")
 
-                # Log each External API call performed by the tool
-                external_apis = parsed_res.get("external_apis", [])
-                if external_apis:
-                    for api_info in external_apis:
-                        api_name = api_info.get("name", "Yahoo Finance API")
-                        api_url = api_info.get("url", "")
-                        api_method = api_info.get("method", "GET")
-                        api_status = api_info.get("status_code", 200)
+    # 3. time-weather-skill
+    elif any("time-weather" in s or "weather" in s for s in active_skill_names) or "env_tools.py" in inst_lower:
+        script_path = SKILLS_DIR / "time-weather-skill" / "scripts" / "env_tools.py"
+        # Extract city from instruction or question
+        city = "London"
+        city_m = re.search(r'env_tools\.py\s+["\']?([^"\'\s\-]+)["\']?', instruction)
+        if city_m and city_m.group(1).lower() not in ["python", "python3"]:
+            city = city_m.group(1)
+        else:
+            for c in ["Tokyo", "Paris", "London", "New York", "San Francisco", "Berlin", "Sydney", "Chicago"]:
+                if c.lower() in q_lower or c.lower() in inst_lower:
+                    city = c
+                    break
 
-                        api_req = api_info.get("request", {"method": api_method, "url": api_url})
-                        api_resp = api_info.get("response", {"status_code": api_status})
+        unit = "fahrenheit" if ("fahrenheit" in q_lower or "fahrenheit" in inst_lower) else "celsius"
+        cmd = [sys.executable, str(script_path), city, "--unit", unit, "--json"]
+        tool_req = {"tool": "env_tools.py", "city": city, "unit": unit, "command": cmd}
 
-                        log_event(
-                            event_type="External API",
-                            invoker="Tool (stock_tools.py)",
-                            target=api_name,
-                            short_description=f"HTTP {api_method} {api_url[:55]}...",
-                            payload={
-                                "request": api_req,
-                                "response": api_resp
-                            },
-                            conversation_id=conversation_id,
-                            duration_ms=round(duration_ms, 2),
-                            status="success" if api_status == 200 else "error"
-                        )
+        try:
+            res = subprocess.check_output(cmd, cwd=str(REPO_ROOT), timeout=15).decode("utf-8")
+            raw_output = res
+            parsed_res = json.loads(res) if res.strip().startswith("{") else {"raw_output": res}
 
-                        components.append({
-                            "name": "External API",
-                            "role": "Public Web API",
-                            "icon": "🌐",
-                            "status": "success" if api_status == 200 else "error",
-                            "duration_ms": round(duration_ms, 2),
-                            "description": f"Called {api_name}",
-                            "request": api_req,
-                            "response": api_resp
-                        })
+            duration_ms = (time.time() - start_time) * 1000
+            log_event(
+                event_type="Tool",
+                invoker="Agent",
+                target="env_tools.py (Open-Meteo API)",
+                short_description=f"Executed env_tools.py for '{city}' ({unit})",
+                payload={"request": tool_req, "response": parsed_res},
+                conversation_id=conversation_id,
+                duration_ms=duration_ms,
+                status="success"
+            )
 
-                tool_chunks.append({
-                    "content": (
-                        f"=== LIVE TOOL EXECUTION: stock_tools.py ({flag}) ===\n"
-                        f"{res}\n"
-                        f"=== END LIVE TOOL RESULT ==="
-                    ),
-                    "metadata": {
-                        "source": str(script_path),
-                        "title": f"Live Stock Screener Output ({flag})",
-                        "type": "live_tool_execution"
-                    },
-                    "score": 1.0
-                })
-            except Exception as e:
-                duration_ms = (time.time() - start_tool_time) * 1000
-                err_resp = {"error": str(e)}
+            components.append({
+                "name": "Tool",
+                "role": "Skill Script",
+                "icon": "🌤️",
+                "status": "success",
+                "duration_ms": round(duration_ms, 2),
+                "description": f"Executed env_tools.py for '{city}' ({unit})",
+                "request": tool_req,
+                "response": {"city": parsed_res.get("city", city), "weather": parsed_res.get("weather", {})}
+            })
+
+            # Check for logged external APIs
+            for api_info in parsed_res.get("external_apis", []):
                 log_event(
-                    event_type="Tool",
-                    invoker="Agent",
-                    target="stock_tools.py (Yahoo Finance Screener)",
-                    short_description=f"Error executing stock screener ({flag})",
-                    payload={"request": tool_req, "response": err_resp},
+                    event_type="External API",
+                    invoker="Tool (env_tools.py)",
+                    target=api_info.get("name", "Open-Meteo API"),
+                    short_description=f"HTTP {api_info.get('method', 'GET')} {api_info.get('url', '')[:50]}...",
+                    payload={"request": api_info.get("request", {}), "response": api_info.get("response", {})},
                     conversation_id=conversation_id,
-                    duration_ms=duration_ms,
-                    status="error"
+                    duration_ms=round(duration_ms / 2, 2),
+                    status="success"
                 )
-                components.append({
-                    "name": "Tool",
-                    "role": "Skill Script",
-                    "icon": "🛠️",
-                    "status": "error",
-                    "duration_ms": round(duration_ms, 2),
-                    "description": f"Failed executing stock_tools.py: {str(e)}",
-                    "request": tool_req,
-                    "response": err_resp
-                })
-                print(f"[SkillRunner] Error executing stock_tools.py: {e}")
+
+            tool_chunks.append({
+                "content": f"=== LIVE TOOL EXECUTION: env_tools.py ({city}) ===\n{res}\n=== END LIVE TOOL RESULT ===",
+                "metadata": {"source": str(script_path), "title": f"Live Weather Output: {city}", "type": "live_tool_execution"},
+                "score": 1.0
+            })
+        except Exception as e:
+            raw_output = f"Error executing env_tools.py: {e}"
+            print(f"[SkillRunner] {raw_output}")
 
     return {
+        "raw_output": raw_output,
         "chunks": tool_chunks,
         "components": components
+    }
+
+
+def run_agent_skill_pipeline(
+    question: str,
+    model: Optional[str] = None,
+    custom_endpoint: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    top_k: int = 4
+) -> Dict[str, Any]:
+    """
+    Full Agent Reasoning Loop:
+    1. Embed prompt using local Ollama.
+    2. Query the Skill Database with similarity threshold > 50% (> 0.50).
+    3. If NO skill matches > 50%:
+       - Send prompt to LLM model with the exact required system prompt:
+         "You are a helpful, respectful, and honest assistant. Always answer as truthfully as possible, use clear markdown formatting, and admit when you do not know an answer rather than guessing."
+       - Return direct answer.
+    4. If skills MATCH (> 50%):
+       - Step 1: Send prompt and list of matched SKILL.md files to the LLM model.
+         LLM responds with the plan or execution instruction.
+       - Step 2: Agent performs the instruction sent from the LLM model (executes script).
+       - Step 3: Send results of instruction execution + prompt + SKILL.md to the LLM model.
+         LLM responds with the final synthesized user answer.
+    """
+    total_start_time = time.time()
+    embedder = OllamaEmbeddingFunction()
+
+    # Step 1: Pass prompt to embedder
+    emb_start = time.time()
+    prompt_embedding = embedder.embed_query(question)
+    emb_duration = (time.time() - emb_start) * 1000
+
+    log_event(
+        event_type="Embedder",
+        invoker="Agent",
+        target=f"Local Ollama ({embedder.model})",
+        short_description=f"Generated vector embedding ({len(prompt_embedding)} dims)",
+        payload={"prompt": question, "dimensions": len(prompt_embedding)},
+        conversation_id=conversation_id,
+        duration_ms=emb_duration,
+        status="success"
+    )
+
+    # Step 2: Query skill database
+    skill_db_start = time.time()
+    matched_skills = skill_vector_store.query(
+        query_text=question,
+        query_embedding=prompt_embedding,
+        top_k=5,
+        min_score=0.50
+    )
+    skill_db_duration = (time.time() - skill_db_start) * 1000
+
+    log_event(
+        event_type="Vector Store (Skills)",
+        invoker="Agent",
+        target="ChromaDB (database/chroma_skills)",
+        short_description=f"Queried skill database: {len(matched_skills)} candidate(s) > 50%",
+        payload={
+            "query": question,
+            "min_score": 0.50,
+            "matched_skills": [{"name": s.get("name"), "score": s.get("score")} for s in matched_skills]
+        },
+        conversation_id=conversation_id,
+        duration_ms=skill_db_duration,
+        status="success"
+    )
+
+    components: List[Dict[str, Any]] = [
+        {
+            "name": "Embedder",
+            "role": "Local Embedding",
+            "icon": "🧠",
+            "status": "success",
+            "duration_ms": round(emb_duration, 2),
+            "description": f"Embedded prompt via Ollama ({len(prompt_embedding)} dims)",
+            "request": {"prompt": question},
+            "response": {"dimensions": len(prompt_embedding)}
+        },
+        {
+            "name": "Vector Store",
+            "role": "Skill Vector DB",
+            "icon": "⚡",
+            "status": "success",
+            "duration_ms": round(skill_db_duration, 2),
+            "description": f"Scanned skill database (found {len(matched_skills)} candidate(s) > 50% score)",
+            "request": {"query": question, "threshold": 0.50},
+            "response": {
+                "matches_count": len(matched_skills),
+                "retrieved_count": len(matched_skills),
+                "skills": [s.get("name") for s in matched_skills]
+            }
+        },
+        {
+            "name": "Skill Store",
+            "role": "Skill Vector DB",
+            "icon": "⚡",
+            "status": "success",
+            "duration_ms": round(skill_db_duration, 2),
+            "description": f"Scanned skill database (found {len(matched_skills)} candidate(s) > 50% score)",
+            "request": {"query": question, "threshold": 0.50},
+            "response": {
+                "matches_count": len(matched_skills),
+                "retrieved_count": len(matched_skills),
+                "skills": [s.get("name") for s in matched_skills]
+            }
+        }
+    ]
+
+    # Branch A: No skill with > 50% match
+    if not matched_skills:
+        llm_resp = gemma_service.answer_question(
+            question=question,
+            retrieved_chunks=[],
+            model=model,
+            system_instruction=NO_SKILL_SYSTEM_PROMPT,
+            conversation_id=conversation_id,
+            custom_endpoint=custom_endpoint
+        )
+        if llm_resp.get("component"):
+            components.append(llm_resp["component"])
+
+        total_duration = (time.time() - total_start_time) * 1000
+        return {
+            "answer": llm_resp.get("answer", ""),
+            "model": llm_resp.get("model", ""),
+            "sources": [],
+            "components": components,
+            "has_skill": False,
+            "duration_ms": round(total_duration, 2)
+        }
+
+    # Branch B: Skills matched (> 50%)
+    # Build skills text representation containing complete SKILL.md content
+    skills_context = []
+    for s in matched_skills:
+        skills_context.append(
+            f"=== SKILL: {s.get('name')} (Relevance: {s.get('score')}) ===\n"
+            f"{s.get('content')}\n"
+            f"=== END SKILL ==="
+        )
+    skills_text = "\n\n".join(skills_context)
+
+    # 1. Ask LLM for Plan / Execution Instruction
+    planner_system = (
+        "You are the autonomous planning module of Agent with RAG. "
+        "Review the user question and the provided skill Standard Operating Procedures (SOPs). "
+        "Formulate a concise execution plan or tool command instruction to fulfill the user request. "
+        "Specify the exact script command to execute (e.g., `python skills/.../scripts/...py <arguments>`)."
+    )
+    planner_prompt = (
+        f"Available Active Skills:\n\n{skills_text}\n\n"
+        f"User Question: {question}\n\n"
+        f"Please provide the plan and execution instruction for the agent."
+    )
+
+    planner_llm_resp = gemma_service.answer_question(
+        question=planner_prompt,
+        retrieved_chunks=[],
+        model=model,
+        system_instruction=planner_system,
+        conversation_id=conversation_id,
+        custom_endpoint=custom_endpoint
+    )
+    instruction = planner_llm_resp.get("answer", "").strip()
+
+    components.append({
+        "name": "Planner",
+        "role": "LLM Planning Engine",
+        "icon": "📋",
+        "status": "success",
+        "duration_ms": planner_llm_resp.get("duration_ms", 0.0),
+        "description": "Generated tool execution plan & command from skill SOPs",
+        "request": {"question": question, "matched_skills": [s.get("name") for s in matched_skills]},
+        "response": {"instruction": instruction[:200] + "..." if len(instruction) > 200 else instruction}
+    })
+
+    # 2. Agent performs the instruction
+    exec_result = execute_instruction(
+        instruction=instruction,
+        question=question,
+        active_skills=matched_skills,
+        conversation_id=conversation_id
+    )
+    tool_chunks = exec_result.get("chunks", [])
+    components.extend(exec_result.get("components", []))
+
+    # 3. Synthesize final answer: Send execution results, prompt, and SKILL.md to LLM
+    synthesis_chunks = []
+    # Add matched SKILL.md context as Document 1
+    for i, s in enumerate(matched_skills, 1):
+        synthesis_chunks.append({
+            "content": s.get("content", ""),
+            "metadata": {
+                "source": s.get("metadata", {}).get("source", f"skills/{s.get('skill_id')}/SKILL.md"),
+                "title": f"Skill: {s.get('name')}"
+            },
+            "score": s.get("score", 1.0)
+        })
+    # Add live tool execution chunks
+    synthesis_chunks.extend(tool_chunks)
+
+    synthesis_system = (
+        "You are a helpful, accurate, and privacy-preserving AI assistant for Agent with RAG. "
+        "Thoroughly answer the user's question using the provided tool execution results and skill guidelines. "
+        "Cite the sources and documents accurately."
+    )
+
+    final_llm_resp = gemma_service.answer_question(
+        question=question,
+        retrieved_chunks=synthesis_chunks,
+        model=model,
+        system_instruction=synthesis_system,
+        conversation_id=conversation_id,
+        custom_endpoint=custom_endpoint
+    )
+    if final_llm_resp.get("component"):
+        components.append(final_llm_resp["component"])
+
+    total_duration = (time.time() - total_start_time) * 1000
+    return {
+        "answer": final_llm_resp.get("answer", ""),
+        "model": final_llm_resp.get("model", ""),
+        "sources": tool_chunks if tool_chunks else synthesis_chunks,
+        "components": components,
+        "has_skill": True,
+        "instruction": instruction,
+        "duration_ms": round(total_duration, 2)
+    }
+
+
+def execute_skill_tools_if_relevant(
+    question: str,
+    retrieved_chunks: List[Dict[str, Any]] = None,
+    conversation_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Backwards compatibility function for executing skill tools.
+    """
+    active_skills = []
+    # Check if question activates any skill
+    emb = OllamaEmbeddingFunction().embed_query(question)
+    skills = skill_vector_store.query(question, query_embedding=emb, min_score=0.50)
+    if skills:
+        active_skills = skills
+
+    res = execute_instruction(
+        instruction=question,
+        question=question,
+        active_skills=active_skills,
+        conversation_id=conversation_id
+    )
+    return {
+        "chunks": res.get("chunks", []),
+        "components": res.get("components", [])
     }
