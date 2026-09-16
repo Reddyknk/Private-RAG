@@ -134,6 +134,37 @@ def save_embedder_model(model_name: str) -> bool:
         return False
 
 
+def set_active_embedder_model(model_name: str) -> bool:
+    """Set and persist the active embedder model name."""
+    return save_embedder_model(model_name)
+
+
+def ensure_model_available(model_name: str, base_url: str = OLLAMA_BASE_URL) -> tuple[bool, str]:
+    """Check if model is available in Ollama, or attempt to pull it."""
+    clean_model = model_name.strip()
+    installed = get_installed_ollama_models(base_url)
+    if any(clean_model == inst or inst.startswith(f"{clean_model}:") for inst in installed):
+        return True, "Model already installed"
+
+    # Try pulling via /api/pull
+    try:
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/api/pull",
+            json={"name": clean_model, "stream": False},
+            timeout=120
+        )
+        if resp.status_code == 200:
+            return True, f"Successfully pulled {clean_model}"
+    except Exception as e:
+        print(f"[EmbedderManager] Auto-pull error for {clean_model}: {e}")
+
+    installed = get_installed_ollama_models(base_url)
+    if any(clean_model == inst or inst.startswith(f"{clean_model}:") for inst in installed):
+        return True, "Model installed"
+
+    return False, f"Model '{clean_model}' is not available in Ollama. Please run 'ollama pull {clean_model}' first."
+
+
 def get_installed_ollama_models(base_url: str = OLLAMA_BASE_URL) -> List[str]:
     """Fetch currently pulled model tags from local Ollama."""
     try:

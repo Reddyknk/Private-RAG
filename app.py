@@ -237,12 +237,24 @@ def ingest_documents():
 
         # Add to document vector store in database/chroma_docs
         result = doc_vector_store.add_documents(documents)
+        added_chunks = result.get("added_chunks", 0)
+        skipped_duplicates = result.get("skipped_duplicates", 0)
+
+        if added_chunks == 0 and skipped_duplicates > 0:
+            msg = f"All {skipped_duplicates} chunk(s) from {path} already exist in the vector database. No duplicate chunks were added."
+        elif skipped_duplicates > 0:
+            msg = f"Successfully ingested {added_chunks} new chunk(s) from {path} into private vector database ({skipped_duplicates} duplicate chunk(s) skipped)."
+        else:
+            msg = f"Successfully ingested {added_chunks} chunk(s) from {path} into private vector database."
+
         return jsonify({
             "status": "success",
-            "message": f"Successfully ingested {len(documents)} chunks from {path} into private vector database.",
+            "message": msg,
             "source_type": source_type,
             "path": path,
             "chunks_count": len(documents),
+            "added_chunks": added_chunks,
+            "skipped_duplicates": skipped_duplicates,
             "total_documents_in_db": result.get("total_documents_in_db", 0),
             "distinct_sources": result.get("distinct_sources", [])
         })
@@ -529,6 +541,11 @@ def change_embedder():
             "error": f"Confirmation phrase mismatch. Expected '{expected_phrase}', received '{confirmation_phrase}'."
         }), 400
 
+    from services.embedder_manager import ensure_model_available
+    is_avail, avail_msg = ensure_model_available(new_model)
+    if not is_avail:
+        return jsonify({"error": avail_msg}), 400
+
     # Switch model in vector store (purges Chroma collection & updates services/embedder_config.json)
     success = vector_store.switch_embedder(new_model)
     if not success:
@@ -552,6 +569,33 @@ def change_embedder():
         "message": f"Successfully switched embedding model to '{new_model}'. Vector database was cleared.",
         "current_model": new_model
     })
+
+
+@app.route("/api/telemetry", methods=["GET"])
+def get_telemetry():
+    """
+    Telemetry API endpoint:
+    Returns aggregate LLM metrics, token usage, and time-series line graph data
+    filtered by model, aggregation interval, and time range.
+    """
+    model = request.args.get("model", "").strip()
+    interval = request.args.get("interval", "15m").strip()
+    time_range = request.args.get("time_range", "1d").strip()
+    start_date = request.args.get("start_date", "").strip() or None
+    end_date = request.args.get("end_date", "").strip() or None
+
+    try:
+        from services.telemetry_service import get_telemetry_data
+        data = get_telemetry_data(
+            model=model,
+            interval=interval,
+            time_range=time_range,
+            start_date=start_date,
+            end_date=end_date
+        )
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 500
 
 
 @app.route("/api/logs/clear", methods=["POST"])

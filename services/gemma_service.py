@@ -63,11 +63,10 @@ class GemmaService:
         }
 
         fallback_models = [
-            {"id": "models/gemma-4-26b-a4b-it", "name": "Gemma 4 26B A4B IT", "description": "High-capability open Gemma model from Google", "is_default": True},
-            {"id": "models/gemini-2.5-flash", "name": "Gemini 2.5 Flash", "description": "Fast, high-performance text model", "is_default": False},
-            {"id": "models/gemini-2.5-pro", "name": "Gemini 2.5 Pro", "description": "Advanced reasoning and complex synthesis", "is_default": False},
-            {"id": "models/gemma-4-31b-it", "name": "Gemma 4 31B IT", "description": "Instruction-tuned 31B Gemma model", "is_default": False},
-            {"id": "models/gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash-Lite", "description": "Ultra-lightweight, rapid response Gemini", "is_default": False},
+            {"id": "models/gemini-3.6-flash", "name": "Gemini 3.6 Flash", "description": "Fast, high-performance model with advanced reasoning", "is_default": True},
+            {"id": "models/gemini-flash-latest", "name": "Gemini Flash Latest", "description": "Latest stable Gemini Flash text model", "is_default": False},
+            {"id": "models/gemma-4-26b-a4b-it", "name": "Gemma 4 26B A4B IT", "description": "High-capability open Gemma model from Google", "is_default": False},
+            {"id": "models/gemini-3.1-flash-lite-preview", "name": "Gemini 3.1 Flash Lite", "description": "Ultra-lightweight, rapid response Gemini", "is_default": False},
             custom_option
         ]
 
@@ -420,12 +419,13 @@ class GemmaService:
             # Build prioritized fallback list to handle 503 UNAVAILABLE / capacity limits
             candidate_models = [model_name]
             standard_fallbacks = [
-                "models/gemini-2.5-flash-lite",
-                GEMMA_PRIMARY_MODEL,
+                "models/gemini-3.6-flash",
+                "models/gemini-flash-latest",
                 "models/gemma-4-26b-a4b-it",
-                "models/gemini-2.5-pro",
-                GEMMA_FALLBACK_MODEL,
-                "models/gemma-4-31b-it"
+                "models/gemini-3-flash-preview",
+                "models/gemini-3.1-flash-lite-preview",
+                GEMMA_PRIMARY_MODEL,
+                GEMMA_FALLBACK_MODEL
             ]
             for fb in standard_fallbacks:
                 if fb and fb not in candidate_models:

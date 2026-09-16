@@ -1,5 +1,6 @@
 import os
 import shutil
+import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import chromadb
@@ -17,6 +18,7 @@ class DocumentVectorStore:
     """
     Vector store dedicated to user and corporate documents.
     Stores chunked documents with 20% overlap in database/chroma_docs.
+    Includes built-in duplicate chunk prevention via content hashing.
     """
     def __init__(self, persist_dir: str = str(CHROMA_DOCS_DIR)):
         self.persist_dir = str(persist_dir)
@@ -35,6 +37,10 @@ class DocumentVectorStore:
             embedding_function=self.embedder,
             metadata={"hnsw:space": "cosine"}
         )
+        try:
+            self.remove_duplicates()
+        except Exception:
+            pass
 
     @property
     def collection(self):
@@ -47,27 +53,109 @@ class DocumentVectorStore:
         self._init_client()
         return self._collection
 
+    def get_existing_content_hashes(self) -> set:
+        """Retrieve set of SHA-256 hashes of all chunks currently in the database."""
+        existing_hashes = set()
+        count = self.collection.count()
+        if count == 0:
+            return existing_hashes
+        try:
+            records = self.collection.get(include=["metadatas", "documents"])
+            for meta, text in zip(records.get("metadatas", []) or [], records.get("documents", []) or []):
+                if meta and "content_hash" in meta and meta["content_hash"]:
+                    existing_hashes.add(meta["content_hash"])
+                elif text:
+                    existing_hashes.add(hashlib.sha256(text.strip().encode("utf-8")).hexdigest())
+        except Exception as e:
+            print(f"[DocumentVectorStore] Warning reading existing hashes: {e}")
+        return existing_hashes
+
+    def remove_duplicates(self) -> int:
+        """
+        Scans existing database and removes any duplicate chunks that share identical content hashes.
+        Returns the number of pruned duplicate chunks.
+        """
+        if self._collection is None:
+            return 0
+        count = self._collection.count()
+        if count == 0:
+            return 0
+        try:
+            records = self._collection.get(include=["documents", "metadatas"])
+            ids = records.get("ids", [])
+            docs = records.get("documents", [])
+            seen_hashes = {}
+            duplicate_ids = []
+            for doc_id, doc in zip(ids, docs):
+                h = hashlib.sha256(doc.strip().encode("utf-8")).hexdigest()
+                if h in seen_hashes:
+                    duplicate_ids.append(doc_id)
+                else:
+                    seen_hashes[h] = doc_id
+            if duplicate_ids:
+                for i in range(0, len(duplicate_ids), 100):
+                    batch = duplicate_ids[i:i + 100]
+                    self._collection.delete(ids=batch)
+                print(f"[DocumentVectorStore] Pruned {len(duplicate_ids)} duplicate chunks from database.")
+                return len(duplicate_ids)
+        except Exception as e:
+            print(f"[DocumentVectorStore] Warning pruning duplicates: {e}")
+        return 0
+
     def add_documents(self, documents: List[Document], batch_size: int = 20) -> Dict[str, Any]:
         """
         Embed and persist document chunks with ~20% overlap into the document database.
+        Checks for and skips any duplicate chunks that are already in the vector database
+        or duplicated within the input batch.
         """
         if not documents:
-            return {"added_chunks": 0, "status": "no_documents"}
+            return {
+                "added_chunks": 0,
+                "skipped_duplicates": 0,
+                "total_chunks_processed": 0,
+                "total_documents_in_db": self.collection.count(),
+                "status": "success"
+            }
 
-        total_chunks = len(documents)
-        ids = []
-        texts = []
-        texts_to_embed = []
-        metadatas = []
+        existing_hashes = self.get_existing_content_hashes()
+
+        unique_docs = []  # List of tuples: (doc, doc_id, content_hash)
+        seen_in_batch = set()
+        skipped_duplicates = 0
 
         for doc in documents:
-            source = doc.metadata.get("source", "unknown")
-            chunk_idx = doc.metadata.get("chunk_index", 0)
-            doc_id = f"doc_{abs(hash(source))}_{chunk_idx}_{total_chunks}"
-            ids.append(doc_id)
-            texts.append(doc.content)
-            texts_to_embed.append(doc.content)
+            clean_text = doc.content.strip()
+            if not clean_text:
+                continue
 
+            content_hash = hashlib.sha256(clean_text.encode("utf-8")).hexdigest()
+
+            # Skip chunk if its exact content is already stored in ChromaDB or seen in this batch
+            if content_hash in existing_hashes or content_hash in seen_in_batch:
+                skipped_duplicates += 1
+                continue
+
+            seen_in_batch.add(content_hash)
+            doc_id = f"chunk_{content_hash[:24]}"
+            unique_docs.append((doc, doc_id, content_hash))
+
+        distinct_sources = list({doc.metadata.get("source") for doc in documents if doc.metadata.get("source")})
+
+        if not unique_docs:
+            return {
+                "added_chunks": 0,
+                "skipped_duplicates": skipped_duplicates,
+                "total_chunks_processed": len(documents),
+                "distinct_sources": distinct_sources,
+                "total_documents_in_db": self.collection.count(),
+                "status": "success"
+            }
+
+        ids = [item[1] for item in unique_docs]
+        texts = [item[0].content for item in unique_docs]
+        metadatas = []
+
+        for doc, _, content_hash in unique_docs:
             clean_meta = {}
             for k, v in doc.metadata.items():
                 if isinstance(v, (str, int, float, bool)):
@@ -75,15 +163,15 @@ class DocumentVectorStore:
                 else:
                     clean_meta[k] = str(v)
             clean_meta["is_document"] = True
+            clean_meta["content_hash"] = content_hash
             metadatas.append(clean_meta)
 
-        for i in range(0, total_chunks, batch_size):
+        for i in range(0, len(unique_docs), batch_size):
             batch_ids = ids[i:i + batch_size]
             batch_texts = texts[i:i + batch_size]
-            batch_texts_to_embed = texts_to_embed[i:i + batch_size]
             batch_metadatas = metadatas[i:i + batch_size]
 
-            batch_embeddings = self.embedder.embed_documents(batch_texts_to_embed)
+            batch_embeddings = self.embedder.embed_documents(batch_texts)
 
             self.collection.upsert(
                 ids=batch_ids,
@@ -92,9 +180,10 @@ class DocumentVectorStore:
                 metadatas=batch_metadatas
             )
 
-        distinct_sources = list({doc.metadata.get("source") for doc in documents})
         return {
-            "added_chunks": total_chunks,
+            "added_chunks": len(unique_docs),
+            "skipped_duplicates": skipped_duplicates,
+            "total_chunks_processed": len(documents),
             "distinct_sources": distinct_sources,
             "total_documents_in_db": self.collection.count(),
             "status": "success"
@@ -116,19 +205,25 @@ class DocumentVectorStore:
             return []
 
         actual_k = min(top_k, count)
-        if query_embedding is not None:
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=actual_k,
-                include=["documents", "metadatas", "distances"]
-            )
-        else:
-            emb = self.embedder.embed_query(query_text)
-            results = self.collection.query(
-                query_embeddings=[emb],
-                n_results=actual_k,
-                include=["documents", "metadatas", "distances"]
-            )
+        try:
+            if query_embedding is not None:
+                results = self.collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=actual_k,
+                    include=["documents", "metadatas", "distances"]
+                )
+            else:
+                emb = self.embedder.embed_query(query_text)
+                results = self.collection.query(
+                    query_embeddings=[emb],
+                    n_results=actual_k,
+                    include=["documents", "metadatas", "distances"]
+                )
+        except Exception as e:
+            if "dimension" in str(e).lower():
+                print(f"[DocumentVectorStore] Warning: Embedding dimension mismatch between active model and collection ({e}). Returning empty results.")
+                return []
+            raise
 
         matched_items: List[Dict[str, Any]] = []
         if results and results.get("documents") and len(results["documents"]) > 0:
@@ -215,6 +310,16 @@ class DocumentVectorStore:
             print(f"[DocumentVectorStore] Reset error: {e}")
             return False
 
+    def _apply_embedder(self, new_model: str) -> bool:
+        """Update internal embedding function to new model and purge document collection."""
+        self.embedder = OllamaEmbeddingFunction(model=new_model)
+        self.clear()
+        return True
+
+    def switch_embedder(self, new_model: str) -> bool:
+        """Switch embedder system-wide."""
+        return switch_system_embedder(new_model)
+
 
 class SkillVectorStore:
     """
@@ -240,6 +345,22 @@ class SkillVectorStore:
             embedding_function=self.embedder,
             metadata={"hnsw:space": "cosine"}
         )
+        # Ensure skills collection dimension matches the active embedder model
+        try:
+            existing = self._collection.get(include=["embeddings"], limit=1)
+            if existing and existing.get("embeddings") and len(existing["embeddings"]) > 0:
+                col_dim = len(existing["embeddings"][0])
+                test_emb = self.embedder.embed_query("test")
+                if test_emb and col_dim != len(test_emb):
+                    print(f"[SkillVectorStore] Dimension mismatch detected (collection: {col_dim}, active embedder: {len(test_emb)}). Rebuilding skills collection...")
+                    self.client.delete_collection(SKILLS_COLLECTION_NAME)
+                    self._collection = self.client.create_collection(
+                        name=SKILLS_COLLECTION_NAME,
+                        embedding_function=self.embedder,
+                        metadata={"hnsw:space": "cosine"}
+                    )
+        except Exception:
+            pass
 
     @property
     def collection(self):
@@ -310,19 +431,25 @@ class SkillVectorStore:
             return []
 
         actual_k = min(top_k, count)
-        if query_embedding is not None:
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=actual_k,
-                include=["documents", "metadatas", "distances"]
-            )
-        else:
-            emb = self.embedder.embed_query(query_text)
-            results = self.collection.query(
-                query_embeddings=[emb],
-                n_results=actual_k,
-                include=["documents", "metadatas", "distances"]
-            )
+        try:
+            if query_embedding is not None:
+                results = self.collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=actual_k,
+                    include=["documents", "metadatas", "distances"]
+                )
+            else:
+                emb = self.embedder.embed_query(query_text)
+                results = self.collection.query(
+                    query_embeddings=[emb],
+                    n_results=actual_k,
+                    include=["documents", "metadatas", "distances"]
+                )
+        except Exception as e:
+            if "dimension" in str(e).lower():
+                print(f"[SkillVectorStore] Warning: Embedding dimension mismatch ({e}). Returning empty results.")
+                return []
+            raise
 
         matched_skills: List[Dict[str, Any]] = []
         if results and results.get("documents") and len(results["documents"]) > 0:
@@ -356,17 +483,29 @@ class SkillVectorStore:
             "total_skills": self.collection.count()
         }
 
-    def switch_embedder(self, new_model: str) -> bool:
+    def clear(self):
+        try:
+            self.client.delete_collection(SKILLS_COLLECTION_NAME)
+        except Exception:
+            pass
+        self._init_client()
+
+    def _apply_embedder(self, new_model: str) -> bool:
+        """Update internal embedding function to new model and purge skills collection."""
         self.embedder = OllamaEmbeddingFunction(model=new_model)
         self.clear()
         return True
+
+    def switch_embedder(self, new_model: str) -> bool:
+        """Switch embedder system-wide."""
+        return switch_system_embedder(new_model)
 
 
 def switch_system_embedder(new_model: str) -> bool:
     from services.embedder_manager import set_active_embedder_model
     set_active_embedder_model(new_model)
-    doc_vector_store.switch_embedder(new_model)
-    skill_vector_store.switch_embedder(new_model)
+    doc_vector_store._apply_embedder(new_model)
+    skill_vector_store._apply_embedder(new_model)
     try:
         from services.skill_runner import auto_index_skills_into_db
         auto_index_skills_into_db()
@@ -378,9 +517,6 @@ def switch_system_embedder(new_model: str) -> bool:
 # Create singleton instances for both vector store databases
 doc_vector_store = DocumentVectorStore()
 skill_vector_store = SkillVectorStore()
-
-# Bind switch_embedder to doc_vector_store
-doc_vector_store.switch_embedder = switch_system_embedder
 
 # Backwards compatibility alias for components referencing vector_store
 vector_store = doc_vector_store

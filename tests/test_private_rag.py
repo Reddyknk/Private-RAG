@@ -18,6 +18,14 @@ class TestPrivateRAG(unittest.TestCase):
         app.config["TESTING"] = True
         app.testing = True
         cls.client = app.test_client()
+        from services.embedder_manager import get_current_embedder_model
+        cls._original_model = get_current_embedder_model()
+        vector_store.switch_embedder("nomic-embed-text")
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "_original_model") and cls._original_model:
+            vector_store.switch_embedder(cls._original_model)
 
     def test_01_ollama_health_and_embedding(self):
         """Test local Ollama connectivity and embedding generation."""
@@ -328,8 +336,8 @@ class TestPrivateRAG(unittest.TestCase):
         html = res.get_data(as_text=True)
 
         self.assertIn("Agent with RAG", html)
-        self.assertIn("AI_icon_s.png", html)
-        self.assertIn("AI_icon.png", html)
+        self.assertTrue("ai-brain-ani-32.gif" in html or "AI_icon_s.png" in html)
+        self.assertTrue("ai-brain-ani-48.gif" in html or "AI_icon.png" in html)
         self.assertIn("btnShutdownApp", html)
         self.assertIn("shutdownModal", html)
         self.assertIn("disable the application for all users", html)
@@ -481,6 +489,38 @@ class TestPrivateRAG(unittest.TestCase):
                 overlap_found = True
                 break
         self.assertTrue(overlap_found, "Expected chunks to have overlapping content (~20%)")
+
+    def test_17_duplicate_chunks_prevention(self):
+        """Verify that duplicate chunks are detected and prevented from being added to the vector store."""
+        import time
+        from services.document_loader import Document
+
+        run_id = time.time()
+        test_doc_a = Document(
+            content=f"Unique test content alpha for deduplication testing: {run_id}_a.",
+            metadata={"source": "test_dedup.txt", "chunk_index": 0}
+        )
+        test_doc_b = Document(
+            content=f"Unique test content beta for deduplication testing: {run_id}_b.",
+            metadata={"source": "test_dedup.txt", "chunk_index": 1}
+        )
+
+        initial_count = vector_store.collection.count()
+
+        # Ingest once
+        res1 = vector_store.add_documents([test_doc_a, test_doc_b])
+        self.assertEqual(res1.get("status"), "success")
+        self.assertEqual(res1.get("added_chunks"), 2)
+        self.assertEqual(res1.get("skipped_duplicates"), 0)
+        self.assertEqual(vector_store.collection.count(), initial_count + 2)
+
+        # Ingest same chunks again (should be skipped)
+        res2 = vector_store.add_documents([test_doc_a, test_doc_b])
+        self.assertEqual(res2.get("status"), "success")
+        self.assertEqual(res2.get("added_chunks"), 0)
+        self.assertEqual(res2.get("skipped_duplicates"), 2)
+        # Database count must not increase
+        self.assertEqual(vector_store.collection.count(), initial_count + 2)
 
 
 if __name__ == "__main__":

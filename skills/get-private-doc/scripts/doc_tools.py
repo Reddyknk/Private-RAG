@@ -27,7 +27,11 @@ def retrieve_private_documents(query: str, top_k: int = 4, min_score: float = 0.
     """Retrieve semantically relevant sections from the private document database."""
     if not query or not query.strip():
         return []
-    return doc_vector_store.query(query_text=query.strip(), top_k=top_k, min_score=min_score)
+    try:
+        return doc_vector_store.query(query_text=query.strip(), top_k=top_k, min_score=min_score)
+    except Exception as e:
+        print(f"[doc_tools] Warning: Document retrieval failed: {e}", file=sys.stderr)
+        return []
 
 
 def main():

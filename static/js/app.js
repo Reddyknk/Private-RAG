@@ -52,6 +52,13 @@ function switchTab(tabId) {
         btn.classList.add("active");
         btn.setAttribute("aria-selected", "true");
         document.getElementById("inputQuestion").focus();
+    } else if (tabId === "pageTelemetry") {
+        const btn = document.getElementById("tabBtnTelemetry");
+        if (btn) {
+            btn.classList.add("active");
+            btn.setAttribute("aria-selected", "true");
+        }
+        loadTelemetry();
     } else if (tabId === "pageLogs") {
         const btn = document.getElementById("tabBtnLogs");
         btn.classList.add("active");
@@ -1259,4 +1266,369 @@ async function executeAppShutdown() {
             `;
         }
     }
+}
+
+// ==========================================
+// 10. Telemetry & Performance Analytics
+// ==========================================
+let telemetryRequestsChart = null;
+let telemetryTokensChart = null;
+let telemetryIsLoading = false;
+
+async function loadTelemetry(isManualRefresh = false) {
+    if (telemetryIsLoading) return;
+    telemetryIsLoading = true;
+
+    const refreshBtn = document.getElementById("btnRefreshTelemetry");
+    const refreshIcon = refreshBtn ? refreshBtn.querySelector(".btn-icon") : null;
+    if (refreshIcon) {
+        refreshIcon.style.display = "inline-block";
+        refreshIcon.style.transition = "transform 0.5s ease";
+        refreshIcon.style.transform = "rotate(360deg)";
+    }
+
+    try {
+        const modelSelect = document.getElementById("telemetryModelSelect");
+        const intervalSelect = document.getElementById("telemetryIntervalSelect");
+        const timeRangeSelect = document.getElementById("telemetryTimeRangeSelect");
+        const startDateInput = document.getElementById("telemetryStartDate");
+        const endDateInput = document.getElementById("telemetryEndDate");
+
+        const selectedModel = modelSelect ? modelSelect.value : "all";
+        const selectedInterval = intervalSelect ? intervalSelect.value : "15m";
+        const selectedTimeRange = timeRangeSelect ? timeRangeSelect.value : "1d";
+
+        let url = `/api/telemetry?model=${encodeURIComponent(selectedModel)}&interval=${encodeURIComponent(selectedInterval)}&time_range=${encodeURIComponent(selectedTimeRange)}`;
+
+        if (selectedTimeRange === "custom") {
+            const startDate = startDateInput ? startDateInput.value : "";
+            const endDate = endDateInput ? endDateInput.value : "";
+            if (startDate) url += `&start_date=${encodeURIComponent(startDate)}`;
+            if (endDate) url += `&end_date=${encodeURIComponent(endDate)}`;
+        }
+
+        const res = await fetch(url);
+        if (!res.ok) {
+            throw new Error(`Server returned HTTP ${res.status}`);
+        }
+        const json = await res.json();
+        if (json.status !== "success") {
+            throw new Error(json.message || "Failed to load telemetry data");
+        }
+
+        const data = json.data || json;
+
+        // 1. Update Top 5 Statistics Metric Cards
+        const totals = data.summary || data.totals || {};
+        const totalPromptsEl = document.getElementById("statTotalPrompts");
+        const totalResponsesEl = document.getElementById("statTotalResponses");
+        const totalErrorsEl = document.getElementById("statTotalErrors");
+        const totalInputTokensEl = document.getElementById("statTotalInputTokens");
+        const totalOutputTokensEl = document.getElementById("statTotalOutputTokens");
+
+        if (totalPromptsEl) totalPromptsEl.textContent = Number(totals.total_prompts || 0).toLocaleString();
+        if (totalResponsesEl) totalResponsesEl.textContent = Number(totals.total_responses || 0).toLocaleString();
+        if (totalErrorsEl) totalErrorsEl.textContent = Number(totals.total_errors || 0).toLocaleString();
+        if (totalInputTokensEl) totalInputTokensEl.textContent = Number(totals.total_input_tokens || 0).toLocaleString();
+        if (totalOutputTokensEl) totalOutputTokensEl.textContent = Number(totals.total_output_tokens || 0).toLocaleString();
+
+        // 2. Populate Model Filter Dropdown
+        const models = data.models || data.available_models || [];
+        if (modelSelect && Array.isArray(models)) {
+            const currentVal = modelSelect.value;
+            const existingOptions = Array.from(modelSelect.options).map(o => o.value);
+            const newOptions = ["all", ...models];
+            const hasChanged = existingOptions.length !== newOptions.length || !newOptions.every(m => existingOptions.includes(m));
+
+            if (hasChanged) {
+                modelSelect.innerHTML = `<option value="all">All Models</option>`;
+                models.forEach(m => {
+                    const opt = document.createElement("option");
+                    opt.value = m;
+                    opt.textContent = m;
+                    modelSelect.appendChild(opt);
+                });
+                if (newOptions.includes(currentVal)) {
+                    modelSelect.value = currentVal;
+                } else {
+                    modelSelect.value = "all";
+                }
+            }
+        }
+
+        // 3. Update Interval Badges on Graph Cards
+        const intervalLabels = {
+            "1m": "1 min interval",
+            "15m": "15 min interval",
+            "1h": "1 hr interval",
+            "1d": "1 day interval"
+        };
+        const currentInterval = (data.filters && data.filters.interval) || data.interval || "15m";
+        const intervalText = intervalLabels[currentInterval] || `${currentInterval} interval`;
+        const leftBadge = document.getElementById("leftPlotIntervalBadge");
+        const rightBadge = document.getElementById("rightPlotIntervalBadge");
+        if (leftBadge) leftBadge.textContent = intervalText;
+        if (rightBadge) rightBadge.textContent = intervalText;
+
+        // 4. Render Dual Graphs (Chart.js)
+        renderTelemetryCharts(data.time_series || []);
+
+        if (isManualRefresh) {
+            showToast("Telemetry metrics refreshed successfully", "success");
+        }
+    } catch (err) {
+        console.error("Error loading telemetry:", err);
+        showToast("Failed to fetch telemetry data: " + err.message, "error");
+    } finally {
+        telemetryIsLoading = false;
+        if (refreshIcon) {
+            setTimeout(() => {
+                refreshIcon.style.transform = "none";
+            }, 500);
+        }
+    }
+}
+
+function renderTelemetryCharts(series) {
+    if (typeof Chart === "undefined") {
+        console.warn("Chart.js is not loaded, skipping chart rendering");
+        return;
+    }
+
+    let labels = [];
+    let promptsData = [];
+    let responsesData = [];
+    let errorsData = [];
+    let inputTokensData = [];
+    let outputTokensData = [];
+
+    if (Array.isArray(series)) {
+        labels = series.map(item => item.timestamp || item.label || "");
+        promptsData = series.map(item => item.prompts || 0);
+        responsesData = series.map(item => item.responses || 0);
+        errorsData = series.map(item => item.errors || 0);
+        inputTokensData = series.map(item => item.input_tokens || 0);
+        outputTokensData = series.map(item => item.output_tokens || 0);
+    } else if (series && typeof series === "object") {
+        labels = series.labels || [];
+        promptsData = series.prompts || [];
+        responsesData = series.responses || [];
+        errorsData = series.errors || [];
+        inputTokensData = series.input_tokens || [];
+        outputTokensData = series.output_tokens || [];
+    }
+
+    const commonScales = {
+        x: {
+            grid: {
+                color: "rgba(255, 255, 255, 0.05)",
+                drawBorder: false
+            },
+            ticks: {
+                color: "#94a3b8",
+                font: { size: 10.5, family: "'Inter', sans-serif" },
+                maxRotation: 45,
+                minRotation: 0,
+                autoSkip: true,
+                maxTicksLimit: 12
+            }
+        },
+        y: {
+            beginAtZero: true,
+            grid: {
+                color: "rgba(255, 255, 255, 0.05)",
+                drawBorder: false
+            },
+            ticks: {
+                color: "#94a3b8",
+                font: { size: 10.5, family: "'Inter', sans-serif" },
+                precision: 0
+            }
+        }
+    };
+
+    const commonPlugins = {
+        legend: {
+            position: "top",
+            labels: {
+                color: "#cbd5e1",
+                font: { size: 12, family: "'Inter', sans-serif" },
+                boxWidth: 14,
+                boxHeight: 14,
+                usePointStyle: true,
+                pointStyle: "circle",
+                padding: 16
+            }
+        },
+        tooltip: {
+            backgroundColor: "rgba(15, 21, 35, 0.95)",
+            titleColor: "#f8fafc",
+            bodyColor: "#cbd5e1",
+            borderColor: "rgba(56, 189, 248, 0.3)",
+            borderWidth: 1,
+            padding: 10,
+            cornerRadius: 8,
+            titleFont: { size: 12, weight: "bold" },
+            bodyFont: { size: 12 }
+        }
+    };
+
+    // 1. Left Plot: Requests Activity (Prompts, Responses, Errors)
+    const requestsCanvas = document.getElementById("telemetryRequestsChart");
+    if (requestsCanvas) {
+        if (telemetryRequestsChart) {
+            telemetryRequestsChart.destroy();
+        }
+        const ctxReq = requestsCanvas.getContext("2d");
+        telemetryRequestsChart = new Chart(ctxReq, {
+            type: "line",
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: "Prompts",
+                        data: promptsData,
+                        borderColor: "#6366f1",
+                        backgroundColor: "rgba(99, 102, 241, 0.15)",
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 2,
+                        pointHoverRadius: 5,
+                        fill: false
+                    },
+                    {
+                        label: "Responses",
+                        data: responsesData,
+                        borderColor: "#10b981",
+                        backgroundColor: "rgba(16, 185, 129, 0.15)",
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 2,
+                        pointHoverRadius: 5,
+                        fill: false
+                    },
+                    {
+                        label: "Errors",
+                        data: errorsData,
+                        borderColor: "#f43f5e",
+                        backgroundColor: "rgba(244, 63, 94, 0.15)",
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 2,
+                        pointHoverRadius: 5,
+                        fill: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: "index",
+                    intersect: false
+                },
+                scales: commonScales,
+                plugins: commonPlugins
+            }
+        });
+    }
+
+    // 2. Right Plot: Token Throughput (Input & Output Tokens)
+    const tokensCanvas = document.getElementById("telemetryTokensChart");
+    if (tokensCanvas) {
+        if (telemetryTokensChart) {
+            telemetryTokensChart.destroy();
+        }
+        const ctxTok = tokensCanvas.getContext("2d");
+        telemetryTokensChart = new Chart(ctxTok, {
+            type: "line",
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: "Input Tokens",
+                        data: inputTokensData,
+                        borderColor: "#06b6d4",
+                        backgroundColor: "rgba(6, 182, 212, 0.15)",
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 2,
+                        pointHoverRadius: 5,
+                        fill: false
+                    },
+                    {
+                        label: "Output Tokens",
+                        data: outputTokensData,
+                        borderColor: "#a855f7",
+                        backgroundColor: "rgba(168, 85, 247, 0.15)",
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 2,
+                        pointHoverRadius: 5,
+                        fill: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: "index",
+                    intersect: false
+                },
+                scales: commonScales,
+                plugins: commonPlugins
+            }
+        });
+    }
+}
+
+function handleTelemetryModelChange() {
+    loadTelemetry();
+}
+
+function handleTelemetryIntervalChange() {
+    loadTelemetry();
+}
+
+function handleTelemetryTimeRangeChange() {
+    const rangeSelect = document.getElementById("telemetryTimeRangeSelect");
+    const customBar = document.getElementById("telemetryCustomDates");
+    if (!rangeSelect) return;
+
+    if (rangeSelect.value === "custom") {
+        if (customBar) customBar.style.display = "flex";
+        const startInput = document.getElementById("telemetryStartDate");
+        const endInput = document.getElementById("telemetryEndDate");
+        if (startInput && !startInput.value) {
+            const d = new Date();
+            d.setDate(d.getDate() - 7);
+            startInput.value = d.toISOString().split("T")[0];
+        }
+        if (endInput && !endInput.value) {
+            endInput.value = new Date().toISOString().split("T")[0];
+        }
+        loadTelemetry();
+    } else {
+        if (customBar) customBar.style.display = "none";
+        loadTelemetry();
+    }
+}
+
+function applyCustomDates() {
+    const startInput = document.getElementById("telemetryStartDate");
+    const endInput = document.getElementById("telemetryEndDate");
+    if (!startInput || !endInput || !startInput.value || !endInput.value) {
+        showToast("Please select both starting and ending dates.", "warning");
+        return;
+    }
+    if (startInput.value > endInput.value) {
+        showToast("Starting date cannot be later than ending date.", "warning");
+        return;
+    }
+    loadTelemetry();
+}
+
+function refreshTelemetry() {
+    loadTelemetry(true);
 }

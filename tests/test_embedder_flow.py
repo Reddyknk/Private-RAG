@@ -11,13 +11,17 @@ from services.vector_store import vector_store
 
 def test_embedder_config_init_and_persistence():
     """Verify embedder config is created and can be updated."""
-    init_embedder_config()
-    current = get_current_embedder_model()
-    assert current is not None
-    
-    # Save a model
-    assert save_embedder_model("all-minilm") is True
-    assert get_current_embedder_model() == "all-minilm"
+    original = get_current_embedder_model()
+    try:
+        init_embedder_config()
+        current = get_current_embedder_model()
+        assert current is not None
+        
+        # Save a model
+        assert save_embedder_model("all-minilm") is True
+        assert get_current_embedder_model() == "all-minilm"
+    finally:
+        save_embedder_model(original)
 
 
 def test_ensure_ollama_running():
@@ -58,16 +62,20 @@ def test_embedder_change_mismatch():
 
 def test_embedder_change_valid():
     """Verify /api/embedder/change successfully switches model and resets vector db."""
-    client = app.test_client()
-    resp = client.post("/api/embedder/change", json={
-        "new_model": "all-minilm",
-        "confirmation_phrase": "Change to all-minilm"
-    })
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["status"] == "success"
-    assert data["current_model"] == "all-minilm"
-    assert get_current_embedder_model() == "all-minilm"
+    original = get_current_embedder_model()
+    try:
+        client = app.test_client()
+        resp = client.post("/api/embedder/change", json={
+            "new_model": "all-minilm",
+            "confirmation_phrase": "Change to all-minilm"
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "success"
+        assert data["current_model"] == "all-minilm"
+        assert get_current_embedder_model() == "all-minilm"
+    finally:
+        save_embedder_model(original)
 
 
 def test_html_contains_required_elements():

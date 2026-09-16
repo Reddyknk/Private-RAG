@@ -15,6 +15,8 @@
         href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Chart.js (Local offline bundle) -->
+    <script src="/static/js/chart.umd.min.js"></script>
 </head>
 
 <body>
@@ -31,7 +33,7 @@
                 </div>
             </div>
 
-            <!-- Three Main Switchable Tabs at the top of the window -->
+            <!-- Four Main Switchable Tabs at the top of the window -->
             <nav class="top-nav-tabs" role="tablist" id="mainTabNav">
                 <button class="nav-tab active" id="tabBtnQuery" role="tab" aria-selected="true"
                     aria-controls="pageQuery" onclick="switchTab('pageQuery')">
@@ -43,10 +45,15 @@
                     <span class="tab-icon">📥</span>
                     <span class="tab-label">2. Vector DB Ingestion</span>
                 </button>
+                <button class="nav-tab" id="tabBtnTelemetry" role="tab" aria-selected="false" aria-controls="pageTelemetry"
+                    onclick="switchTab('pageTelemetry')">
+                    <span class="tab-icon">📊</span>
+                    <span class="tab-label">3. Telemetry</span>
+                </button>
                 <button class="nav-tab" id="tabBtnLogs" role="tab" aria-selected="false" aria-controls="pageLogs"
                     onclick="switchTab('pageLogs')">
                     <span class="tab-icon">📜</span>
-                    <span class="tab-label">3. Audit Logs & DB Explorer</span>
+                    <span class="tab-label">4. Audit Logs & DB Explorer</span>
                     <span class="log-count-pill" id="logBadgeCount">0</span>
                 </button>
             </nav>
@@ -364,7 +371,185 @@
                 </div>
             </section>
 
-            <!-- PAGE 3: Audit Logs & Vector DB Inspector -->
+            <!-- PAGE 3: Telemetry & Model Performance Analytics -->
+            <section class="page-view" id="pageTelemetry" role="tabpanel" aria-labelledby="tabBtnTelemetry">
+                <div class="page-header">
+                    <div class="page-title-group">
+                        <h2>LLM Model Telemetry & Usage Analytics</h2>
+                        <p class="subtitle">Real-time prompt activity, token throughput, error tracking, and time-series performance graphs.</p>
+                    </div>
+                    <div class="telemetry-header-actions">
+                        <div class="telemetry-model-filter-wrap">
+                            <label for="telemetryModelSelect" class="telemetry-control-label">
+                                <span class="control-icon">🤖</span> Model:
+                            </label>
+                            <select id="telemetryModelSelect" class="select-input telemetry-dropdown" onchange="handleTelemetryModelChange()">
+                                <option value="all" selected>All Models</option>
+                            </select>
+                        </div>
+                        <button type="button" class="btn btn-outline" id="btnRefreshTelemetry" onclick="refreshTelemetry()">
+                            <span class="btn-icon">🔄</span> Refresh Telemetry
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Top 5 Statistics Metric Cards -->
+                <div class="metrics-grid telemetry-metrics-grid">
+                    <div class="metric-card telemetry-card">
+                        <div class="metric-icon blue">💬</div>
+                        <div class="metric-content">
+                            <span class="metric-label">Total Prompts</span>
+                            <span class="metric-value" id="statTotalPrompts">0</span>
+                            <span class="metric-subtext">Requests sent to LLM</span>
+                        </div>
+                    </div>
+                    <div class="metric-card telemetry-card">
+                        <div class="metric-icon green">✅</div>
+                        <div class="metric-content">
+                            <span class="metric-label">Total Response</span>
+                            <span class="metric-value" id="statTotalResponses">0</span>
+                            <span class="metric-subtext">Successful completions</span>
+                        </div>
+                    </div>
+                    <div class="metric-card telemetry-card">
+                        <div class="metric-icon red">⚠️</div>
+                        <div class="metric-content">
+                            <span class="metric-label">Total Errors</span>
+                            <span class="metric-value" id="statTotalErrors">0</span>
+                            <span class="metric-subtext">Failed LLM calls</span>
+                        </div>
+                    </div>
+                    <div class="metric-card telemetry-card">
+                        <div class="metric-icon cyan">📥</div>
+                        <div class="metric-content">
+                            <span class="metric-label">Total Input Tokens</span>
+                            <span class="metric-value" id="statTotalInputTokens">0</span>
+                            <span class="metric-subtext">Prompt tokens ingested</span>
+                        </div>
+                    </div>
+                    <div class="metric-card telemetry-card">
+                        <div class="metric-icon purple">📤</div>
+                        <div class="metric-content">
+                            <span class="metric-label">Total Output Tokens</span>
+                            <span class="metric-value" id="statTotalOutputTokens">0</span>
+                            <span class="metric-subtext">Generated completion tokens</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dual Graphs Card with Interval & Time Range Selectors -->
+                <div class="card glass-card telemetry-charts-card">
+                    <div class="card-header telemetry-charts-header">
+                        <div class="card-header-titles">
+                            <h3>Model Activity & Token Consumption Trends</h3>
+                            <p class="section-desc">Interactive dual line graphs showing request volume and token consumption over time.</p>
+                        </div>
+                        <div class="telemetry-chart-controls">
+                            <div class="chart-control-item">
+                                <label for="telemetryIntervalSelect">Aggregation / Update Interval:</label>
+                                <select id="telemetryIntervalSelect" class="select-input" onchange="handleTelemetryIntervalChange()">
+                                    <option value="1m">1 min</option>
+                                    <option value="15m" selected>15 min</option>
+                                    <option value="1h">1 hr</option>
+                                    <option value="1d">1 day</option>
+                                </select>
+                            </div>
+                            <div class="chart-control-item">
+                                <label for="telemetryTimeRangeSelect">Time Range:</label>
+                                <select id="telemetryTimeRangeSelect" class="select-input" onchange="handleTelemetryTimeRangeChange()">
+                                    <option value="1h">Last hr</option>
+                                    <option value="1d" selected>1 day</option>
+                                    <option value="week">Week</option>
+                                    <option value="month">Month</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Custom Calendar Date Pickers (Shown when Custom is selected) -->
+                    <div class="telemetry-custom-dates-bar" id="telemetryCustomDates" style="display: none;">
+                        <div class="custom-date-item">
+                            <label for="telemetryStartDate">Starting Date:</label>
+                            <input type="date" id="telemetryStartDate" class="text-input date-picker-input">
+                        </div>
+                        <div class="custom-date-item">
+                            <label for="telemetryEndDate">Ending Date:</label>
+                            <input type="date" id="telemetryEndDate" class="text-input date-picker-input">
+                        </div>
+                        <button type="button" class="btn btn-sm btn-primary" id="btnApplyCustomDates" onclick="applyCustomDates()">
+                            Apply Range
+                        </button>
+                    </div>
+
+                    <!-- Dual Plots Container: Left (Requests) and Right (Tokens) -->
+                    <div class="telemetry-plots-grid">
+                        <!-- Left Plot: Prompts, Responses, Errors -->
+                        <div class="telemetry-plot-box">
+                            <div class="plot-header">
+                                <h4>Requests Activity (Prompts, Responses, Errors)</h4>
+                                <span class="badge badge-info" id="leftPlotIntervalBadge">15 min interval</span>
+                            </div>
+                            <div class="chart-canvas-wrapper">
+                                <canvas id="telemetryRequestsChart"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Right Plot: Input & Output Tokens -->
+                        <div class="telemetry-plot-box">
+                            <div class="plot-header">
+                                <h4>Token Throughput (Input & Output Tokens)</h4>
+                                <span class="badge badge-purple" id="rightPlotIntervalBadge">15 min interval</span>
+                            </div>
+                            <div class="chart-canvas-wrapper">
+                                <canvas id="telemetryTokensChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Educational Reference Card -->
+                <div class="card glass-card educational-reference-card">
+                    <div class="card-header">
+                        <div class="educational-title-wrap">
+                            <span class="educational-icon">ℹ️</span>
+                            <h3>Other Important Statistic not Available for Low Performance Computer:</h3>
+                        </div>
+                    </div>
+                    <div class="educational-content-grid">
+                        <div class="edu-metric-item">
+                            <div class="edu-metric-header">
+                                <span class="edu-badge">TTFT</span>
+                                <strong>Time to First Token (TTFT):</strong>
+                            </div>
+                            <p>The duration between a user sending a prompt and receiving the very first token. This is the most critical metric for perceived speed in streaming applications.</p>
+                        </div>
+                        <div class="edu-metric-item">
+                            <div class="edu-metric-header">
+                                <span class="edu-badge">ITL</span>
+                                <strong>Inter-Token Latency (ITL):</strong>
+                            </div>
+                            <p>The average time elapsed between generating each subsequent token.</p>
+                        </div>
+                        <div class="edu-metric-item">
+                            <div class="edu-metric-header">
+                                <span class="edu-badge">TPS</span>
+                                <strong>Tokens Per Second (TPS):</strong>
+                            </div>
+                            <p>The throughput speed of the model generation (often measured per request or aggregated across the server).</p>
+                        </div>
+                        <div class="edu-metric-item">
+                            <div class="edu-metric-header">
+                                <span class="edu-badge">TPOT</span>
+                                <strong>Time Per Output Token (TPOT):</strong>
+                            </div>
+                            <p>The total time taken to generate the response divided by the number of output tokens.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- PAGE 4: Audit Logs & Vector DB Inspector -->
             <section class="page-view" id="pageLogs" role="tabpanel" aria-labelledby="tabBtnLogs">
                 <div class="page-header">
                     <div class="page-title-group">
