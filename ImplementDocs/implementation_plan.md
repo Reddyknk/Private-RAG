@@ -68,10 +68,10 @@ flowchart TD
 
 ### 1. Configuration & Dependencies
 
-#### [MODIFY] [requirements.txt](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/requirements.txt)
+#### [MODIFY] [requirements.txt](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/requirements.txt)
 - Include all necessary Python packages: `flask`, `chromadb`, `google-genai`, `requests`, `beautifulsoup4`, `pypdf`, `python-dotenv`.
 
-#### [NEW] [config.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/config.py)
+#### [NEW] [config.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/config.py)
 - Configuration management:
   - Database directory: `database/`
   - Logs path: `database/logs.json`
@@ -85,7 +85,7 @@ flowchart TD
 
 ### 2. Services & Core Logic
 
-#### [NEW] [services/logger_service.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/logger_service.py)
+#### [NEW] [services/logger_service.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/logger_service.py)
 - Thread-safe structured logging to `database/logs.json` satisfying Requirements 6 & 7:
   - `time`: ISO 8601 UTC timestamp
   - `type`: call type (e.g. `ollama_embedding`, `google_ai_studio_gemma`, `external_url_fetch`, `vllm_container`)
@@ -93,25 +93,25 @@ flowchart TD
   - `response`: parsed response summary, status, tokens/output or error
   - `duration_ms`: execution time in milliseconds.
 
-#### [NEW] [services/ollama_embedder.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/ollama_embedder.py)
+#### [NEW] [services/ollama_embedder.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/ollama_embedder.py)
 - Handles vector embeddings via local Ollama (or local container):
   - Sends text batches to `http://127.0.0.1:11434/api/embeddings`
   - Automatically logs each embedding call to `database/logs.json`
   - Handles batching, timeouts, and health checks.
 
-#### [NEW] [services/document_loader.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/document_loader.py)
+#### [NEW] [services/document_loader.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/document_loader.py)
 - Handles ingestion from:
   - Web URLs: HTTP GET with polite User-Agent, parses HTML using BeautifulSoup, extracts main article content, logs external fetch to `database/logs.json`.
   - Local Directories: Recursively scans directory for `.txt`, `.md`, `.pdf`, `.json`, `.csv`, `.py`, extracts clean text and metadata.
   - Chunking: Recursive chunking with configurable overlap (default 600 chars with 100 overlap).
 
-#### [NEW] [services/vector_store.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/vector_store.py)
+#### [NEW] [services/vector_store.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/vector_store.py)
 - Manages persistent ChromaDB vector collection stored in `database/chroma_db/`:
   - Inserts document chunks with embeddings and metadata (source, chunk index, doc title).
   - Performs similarity query using query vector and returns top-k documents with distance scores.
   - Provides collection statistics (total documents, sources, chunk counts).
 
-#### [NEW] [services/gemma_service.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/gemma_service.py)
+#### [NEW] [services/gemma_service.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/gemma_service.py)
 - Manages Gemma generation on Google AI Studio:
   - Builds grounded prompt with retrieved vector database chunks and user question.
   - Calls `google.genai` client using `GEMINI_API_KEY`.
@@ -121,7 +121,7 @@ flowchart TD
 
 ### 3. Web Application & UI
 
-#### [NEW] [app.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/app.py)
+#### [NEW] [app.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/app.py)
 - Flask web application routes:
   - `GET /`: Main multi-tab UI.
   - `POST /api/ingest`: Accepts `{"source_type": "url" | "directory", "path": "..."}`, ingests documents, stores embeddings in `database/`, returns result stats.
@@ -131,20 +131,20 @@ flowchart TD
   - `POST /api/logs/clear`: Utility to clear logs if requested.
   - `POST /api/database/reset`: Utility to reset vector DB if requested.
 
-#### [NEW] [templates/index.html](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/templates/index.html)
+#### [NEW] [templates/index.html](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/templates/index.html)
 - Clean, semantic HTML structure with tab switcher at top of window:
   - **Tab 1: Vector DB Builder**: URL or directory input with auto-validation, chunk settings, live ingestion progress bar, document preview table.
   - **Tab 2: Private RAG Query**: Interactive question box, sample queries, response markdown viewer, cited context accordion with similarity scores.
   - **Tab 3: System Logs & Audit**: Statistics cards, real-time log table with filtering by call type, inspect payload modal, copy-to-clipboard.
 
-#### [NEW] [static/css/style.css](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/static/css/style.css)
+#### [NEW] [static/css/style.css](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/static/css/style.css)
 - Premium modern design system:
   - Curated dark theme (`#0d1117`, `#161b22`, `#21262d`, accent cyan `#38bdf8` and purple `#818cf8`).
   - Google Fonts (Inter + JetBrains Mono for code/logs).
   - Smooth tab switching animations and micro-interactions.
   - Responsive tables, badge tags, and styled modal overlays.
 
-#### [NEW] [static/js/app.js](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/static/js/app.js)
+#### [NEW] [static/js/app.js](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/static/js/app.js)
 - Asynchronous UI controller:
   - Tab state management.
   - Ingestion submission and live status feedback.

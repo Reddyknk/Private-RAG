@@ -29,7 +29,7 @@ Refactor the system from a single vector store to two distinct vector store data
 
 ### Configuration & Storage Layer
 
-#### [MODIFY] [config.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/config.py)
+#### [MODIFY] [config.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/config.py)
 - Define `CHROMA_DOCS_DIR = DATABASE_DIR / "chroma_docs"`
 - Define `CHROMA_SKILLS_DIR = DATABASE_DIR / "chroma_skills"`
 - Set standard chunk size to `500` and overlap to `100` (~20% overlap) as default for document ingestion.
@@ -38,7 +38,7 @@ Refactor the system from a single vector store to two distinct vector store data
 
 ### Vector Store Layer
 
-#### [MODIFY] [services/vector_store.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/vector_store.py)
+#### [MODIFY] [services/vector_store.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/vector_store.py)
 - Separate collection and persistence logic into:
   - `SkillVectorStore`: Points to `CHROMA_SKILLS_DIR`. Stores `SKILL.md` entries where only `name` and `description` are embedded, and the complete text of `SKILL.md` is stored as a single chunk. Exposes `query(query_text, min_score=0.50)`.
   - `DocumentVectorStore`: Points to `CHROMA_DOCS_DIR`. Stores chunked user documents (~20% overlap). Exposes `query(query_text, top_k=4, min_score=0.30)`.
@@ -48,7 +48,7 @@ Refactor the system from a single vector store to two distinct vector store data
 
 ### Document Ingestion Layer
 
-#### [MODIFY] [services/document_loader.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/document_loader.py)
+#### [MODIFY] [services/document_loader.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/document_loader.py)
 - Enforce 20% overlap in text splitting (e.g. `chunk_size=500`, `chunk_overlap=100` = 20%).
 - Ensure metadata preserves source path, title, and chunk indices for document chunks.
 
@@ -56,7 +56,7 @@ Refactor the system from a single vector store to two distinct vector store data
 
 ### New Skill: `get-private-doc`
 
-#### [NEW] [skills/get-private-doc/SKILL.md](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/skills/get-private-doc/SKILL.md)
+#### [NEW] [skills/get-private-doc/SKILL.md](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/skills/get-private-doc/SKILL.md)
 - Follows `SKILL_SPEC.md` format with frontmatter:
   ```yaml
   ---
@@ -70,7 +70,7 @@ Refactor the system from a single vector store to two distinct vector store data
   - "What is the most recent marketing plan for our company?"
 - Action: Query the document vector database using the user prompt.
 
-#### [NEW] [skills/get-private-doc/scripts/doc_tools.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/skills/get-private-doc/scripts/doc_tools.py)
+#### [NEW] [skills/get-private-doc/scripts/doc_tools.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/skills/get-private-doc/scripts/doc_tools.py)
 - CLI and module tool that queries `DocumentVectorStore` using the provided `--query` string.
 - Formats retrieved chunks with document title, path, relevance score, and content snippet. Supports `--json` output.
 
@@ -78,7 +78,7 @@ Refactor the system from a single vector store to two distinct vector store data
 
 ### Agent Execution & Orchestration Layer
 
-#### [MODIFY] [services/skill_runner.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/skill_runner.py)
+#### [MODIFY] [services/skill_runner.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/skill_runner.py)
 - Update `auto_index_skills_into_db()` to scan `skills/` upon startup and index into `SkillVectorStore`.
 - Implement `run_agent_pipeline(question, model, custom_endpoint, conversation_id)`:
   1. Embed prompt and query `SkillVectorStore` with `min_score=0.50`.
@@ -90,7 +90,7 @@ Refactor the system from a single vector store to two distinct vector store data
      - **Phase 2**: Agent parses and executes the tool script / action (e.g. `doc_tools.py`, `stock_tools.py`, or `env_tools.py`).
      - **Phase 3**: Agent sends tool output + prompt + `SKILL.md` to LLM for final grounded user answer.
 
-#### [MODIFY] [app.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/app.py)
+#### [MODIFY] [app.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/app.py)
 - On startup, invoke `auto_index_skills_into_db()` targeting `SkillVectorStore`.
 - Update `/api/ingest` to route ingested files to `DocumentVectorStore` with 20% overlap.
 - Update `/api/query` to execute the new Agent pipeline while maintaining complete audit logging in `database/logs.json` and immediate record creation in `database/conversations.json`.

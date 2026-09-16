@@ -1,6 +1,6 @@
 # Private RAG System Implementation Walkthrough
 
-We have designed, implemented, and verified the complete **Private RAG** application following all requirements in [SPECIFICATIONS.md](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/SPECIFICATIONS.md).
+We have designed, implemented, and verified the complete **Private RAG** application following all requirements in [SPECIFICATIONS.md](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/SPECIFICATIONS.md).
 
 ## What Was Accomplished
 
@@ -29,7 +29,7 @@ We have designed, implemented, and verified the complete **Private RAG** applica
 ## File Structure
 
 ```
-privateRAG/
+Agent-with-RAG/
 ├── app.py                      # Flask application and REST API endpoints
 ├── config.py                   # Configuration and path management
 ├── requirements.txt            # Python dependencies
@@ -84,7 +84,7 @@ OK
 - The "Model" dropdown showed no models.
 
 ### Root Cause:
-In [static/js/app.js](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/static/js/app.js), a missing closing brace inside `executeModelChange()` caused a JavaScript syntax parse error (`SyntaxError: Unexpected end of input`). Because of this error, the browser aborted parsing `app.js` before `DOMContentLoaded` could run, preventing tab listeners, model population, and health checks from executing.
+In [static/js/app.js](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/static/js/app.js), a missing closing brace inside `executeModelChange()` caused a JavaScript syntax parse error (`SyntaxError: Unexpected end of input`). Because of this error, the browser aborted parsing `app.js` before `DOMContentLoaded` could run, preventing tab listeners, model population, and health checks from executing.
 
 ### Fix Applied:
 - Restored the missing closing brace and `cancelBtn.disabled = false;` in `executeModelChange()`.
@@ -95,7 +95,7 @@ In [static/js/app.js](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/st
 
 ## 4. Agent Skills Implementation (`SKILL_SPEC.md`)
 
-Two autonomous agent skills were built following the exact specification in [SKILL_SPEC.md](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/SKILL_SPEC.md):
+Two autonomous agent skills were built following the exact specification in [SKILL_SPEC.md](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/SKILL_SPEC.md):
 
 ```
 skills/
@@ -122,7 +122,7 @@ skills/
   ```
 
 ### Skill 2: Stock Market Screener (`skills/stock-market-skill`)
-- **API & Data Used**: Public screener feeds (`day_gainers` and `day_losers`) without API keys, with failover to local flat-file [data/registry.csv](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/skills/stock-market-skill/data/registry.csv).
+- **API & Data Used**: Public screener feeds (`day_gainers` and `day_losers`) without API keys, with failover to local flat-file [data/registry.csv](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/skills/stock-market-skill/data/registry.csv).
 - **Capabilities**:
   - Highest percentage increase (top gainers) sorted descending by `% change`.
   - Lowest percentage decrease / greatest drop (top losers) sorted ascending by `% change`.
@@ -133,7 +133,7 @@ skills/
   ```
 
 ### Vector DB Ingestion & Retrieval Verification
-- On app startup, [services/skill_runner.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/skill_runner.py) automatically discovers and indexes the `SKILL.md` documents into ChromaDB via local Ollama embeddings.
+- On app startup, [services/skill_runner.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/skill_runner.py) automatically discovers and indexes the `SKILL.md` documents into ChromaDB via local Ollama embeddings.
 - End-to-end Chat queries:
   - *"What is the time and weather in Tokyo?"* -> Answered with live local time, overcast condition, and 24.1°C citing `env_tools.py`.
   - *"Which stocks have the highest percentage increase?"* -> Answered with top gainers table (RUM, SAIL, CRWD, S, ZS) citing `stock_tools.py`.
@@ -142,7 +142,7 @@ skills/
 
 ## 5. Structured Asynchronous Logging & Two-Table Audit Explorer
 
-Implemented an asynchronous, redacted, size-capped logging architecture in [services/logger_service.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/logger_service.py) and redesigned Tab 3 in [templates/index.html](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/templates/index.html) and [static/js/app.js](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/static/js/app.js):
+Implemented an asynchronous, redacted, size-capped logging architecture in [services/logger_service.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/logger_service.py) and redesigned Tab 3 in [templates/index.html](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/templates/index.html) and [static/js/app.js](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/static/js/app.js):
 
 ### 1. Asynchronous Non-Blocking Logger
 - Utilizes an in-memory queue (`queue.Queue`) and a dedicated background daemon worker thread (`AsyncLoggerThread`).
@@ -176,7 +176,7 @@ Implemented an asynchronous, redacted, size-capped logging architecture in [serv
 Per the latest requirement: *"log and display all of the requests and responses of Agent, LLM, embedder, tools, and external API. Include all the components in the message."*
 
 ### 1. Granular Logging for All 5 Components
-Every single component involved in the query pipeline is now tracked with explicit `request` and `response` structures, stored in [database/logs.json](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/database/logs.json):
+Every single component involved in the query pipeline is now tracked with explicit `request` and `response` structures, stored in [database/logs.json](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/database/logs.json):
 - **🤖 Agent**: Logs the incoming user prompt and parameters, plus the final agent response, latency, and status.
 - **🧠 Embedder**: Logs local Ollama vectorization requests (prompt, model, endpoint) and response (status code 200, vector dimensions, duration).
 - **📁 Vector Store**: Logs ChromaDB semantic retrieval (query, top_k) and response (retrieved chunks, scores, source paths).
@@ -201,7 +201,7 @@ In Tab 3 (Audit Logs & DB Explorer):
 - Clicking any event row in Table 2 opens an enhanced modal displaying dedicated **📤 Request Payload** and **📥 Response Payload** boxes alongside the complete sanitized JSON.
 
 ### 4. Verification
-- **Automated Tests**: Added `test_07_all_components_logged_and_displayed` to [tests/test_private_rag.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/tests/test_private_rag.py). All 7 unit tests passed (`OK`).
+- **Automated Tests**: Added `test_07_all_components_logged_and_displayed` to [tests/test_private_rag.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/tests/test_private_rag.py). All 7 unit tests passed (`OK`).
 - **Live Query Endpoints**: Verified live with weather query (`conv-49cf0a70d475`) and stock gainers query (`conv-ae7eec9df8c7`), confirming that all 6 components are recorded in `database/logs.json` and returned in the `/api/query` response `components` array.
 
 

@@ -91,7 +91,7 @@ Navigate to the project root and create a virtual environment:
 
 #### On Linux & macOS:
 ```bash
-cd /path/to/privateRAG
+cd /path/to/Agent-with-RAG
 
 # Create virtual environment
 python3 -m venv .venv
@@ -105,7 +105,7 @@ pip install --upgrade pip
 
 #### On Windows PC (PowerShell):
 ```powershell
-cd C:\path\to\privateRAG
+cd C:\path\to\Agent-with-RAG
 
 # Create virtual environment
 python -m venv .venv
@@ -122,7 +122,7 @@ python -m pip install --upgrade pip
 
 #### On Windows PC (Command Prompt - `cmd.exe`):
 ```cmd
-cd C:\path\to\privateRAG
+cd C:\path\to\Agent-with-RAG
 
 :: Create virtual environment
 python -m venv .venv
@@ -154,7 +154,7 @@ Key packages installed:
 ---
 
 ### Step 4: Configure Environment Variables (Run Only Once)
-Create or edit the `.env` file in the root directory of `privateRAG`:
+Create or edit the `.env` file in the root directory of `Agent-with-RAG`:
 
 ```bash
 GEMINI_API_KEY=your-google-ai-studio-api-key-here

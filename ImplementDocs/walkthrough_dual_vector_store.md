@@ -6,7 +6,7 @@ We have completed the refactoring of **Agent with RAG** into a two-database arch
 
 ## 1. Architectural Architecture & Key Changes
 
-### A. Dual Vector Databases ([services/vector_store.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/vector_store.py))
+### A. Dual Vector Databases ([services/vector_store.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/vector_store.py))
 The application now separates skill metadata from ingested knowledge documents:
 
 1. **Skill Database (`database/chroma_skills`)**:
@@ -44,7 +44,7 @@ The application now separates skill metadata from ingested knowledge documents:
 
 ---
 
-### B. New Skill: `get-private-doc` ([skills/get-private-doc/](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/skills/get-private-doc/))
+### B. New Skill: `get-private-doc` ([skills/get-private-doc/](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/skills/get-private-doc/))
 Following the specification in `SKILL_SPEC.md`:
 - **`SKILL.md`**:
   - `name`: `get-private-doc`
@@ -59,7 +59,7 @@ Following the specification in `SKILL_SPEC.md`:
 
 ---
 
-### C. Agent Execution & Fallback Reasoning Loop ([services/skill_runner.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/skill_runner.py))
+### C. Agent Execution & Fallback Reasoning Loop ([services/skill_runner.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/skill_runner.py))
 1. When a user prompt arrives:
    - Ollama generates an embedding for the prompt.
    - The query searches `skill_vector_store` with threshold `min_score = 0.50` (50%).
@@ -75,10 +75,10 @@ Following the specification in `SKILL_SPEC.md`:
 ---
 
 ### D. Branding, UI & Telemetry
-- Browser tab icon updated to [static/images/AI_icon_s.png](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/static/images/AI_icon_s.png).
-- Header brand icon updated to [static/images/AI_icon.png](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/static/images/AI_icon.png).
+- Browser tab icon updated to [static/images/AI_icon_s.png](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/static/images/AI_icon_s.png).
+- Header brand icon updated to [static/images/AI_icon.png](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/static/images/AI_icon.png).
 - Fixed shutdown confirmation modal warning phrase.
-- Fixed context duplication by avoiding redundant `prompt` strings when sending chat `messages` over the wire in [services/gemma_service.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/services/gemma_service.py).
+- Fixed context duplication by avoiding redundant `prompt` strings when sending chat `messages` over the wire in [services/gemma_service.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/services/gemma_service.py).
 - Added component logging for `Embedder`, `Skill Store`, `Vector Store`, `Tool`, `External API`, and `LLM`.
 
 ---
@@ -86,7 +86,7 @@ Following the specification in `SKILL_SPEC.md`:
 ## 2. Verification & Test Results
 
 ### A. Full Automated Test Suite
-Ran all 16 unit and integration tests in [tests/test_private_rag.py](file:///home/pi-net/Documents/agent_eng_labs/privateRAG/tests/test_private_rag.py):
+Ran all 16 unit and integration tests in [tests/test_private_rag.py](file:///home/pi-net/Documents/agent_eng_labs/Agent-with-RAG/tests/test_private_rag.py):
 
 ```bash
 .venv/bin/python -m unittest tests/test_private_rag.py
